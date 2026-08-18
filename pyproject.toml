@@ -9,9 +9,11 @@ description = "Contract-driven codec distillation for Wan, FlashVSR, and private
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "einops>=0.7",
   "torch>=2.1",
   "Pillow>=10",
   "PyYAML>=6",
+  "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
@@ -28,4 +30,3 @@ where = ["src"]
 addopts = "-ra"
 testpaths = ["tests"]
 pythonpath = ["src"]
-

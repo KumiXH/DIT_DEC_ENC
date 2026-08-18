@@ -1,0 +1,17 @@
+project: DiffSynth-Studio Wan Video VAE
+repository: https://github.com/modelscope/DiffSynth-Studio
+revision: 03615819a6209a198c7e4020988a18ba64e05fb0
+retrieved: "2026-08-18"
+license: LICENSE
+upstream_paths:
+  wan_video_vae.py: diffsynth/models/wan_video_vae.py
+known_limitations:
+  - The snapshot is only the VAE implementation, not the complete DiffSynth-Studio package.
+  - Wan2.1_VAE weights are not included and must be supplied by the user.
+  - The integration factory targets the 16-channel WanVideoVAE class at this revision.
+files:
+  - path: wan_video_vae.py
+    sha256: d59096e1d440c8d67af557f80aa2d622f881f4c6a349aa3a668780ba4b8892e9
+  - path: LICENSE
+    sha256: 58feeee47be7ec1007e49a80890838e4302c1bc130501d7bc1eb8bcf15bd3522
+

@@ -21,7 +21,15 @@ from .models.mock import (
 )
 
 
-PATH_KEYS = {"lq_root", "gt_root", "output_dir", "checkpoint", "repository", "cache_root"}
+PATH_KEYS = {
+    "lq_root",
+    "gt_root",
+    "output_dir",
+    "checkpoint",
+    "repository",
+    "cache_root",
+    "source_file",
+}
 
 
 MOCK_MODELS = {
@@ -143,4 +151,3 @@ def build_components(config: Mapping[str, Any]) -> dict[str, nn.Module]:
         else:
             raise ContractError(f"component {name!r} has unsupported adapter kind {kind!r}")
     return result
-
