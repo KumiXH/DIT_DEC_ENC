@@ -8,7 +8,7 @@ from distill_codec.adapters import (
     freeze_module,
     repeat_video_frames,
 )
-from distill_codec.contracts import ColorSpec, ContractError, LatentSpec
+from distill_codec.contracts import ColorSpec, ConditionSpec, ContractError, LatentSpec
 from distill_codec.factories import build_from_factory
 from distill_codec.models.mock import (
     MockConditionalStudentDecoder,
@@ -93,6 +93,39 @@ def test_video_teacher_encoder_normalizes_single_frame_output():
     assert repeat_video_frames(torch.zeros(1, 3, 4, 4), 3).shape == (1, 3, 3, 4, 4)
 
 
+@pytest.mark.parametrize(
+    ("frame_selection", "expected"),
+    (("first", 0.0), ("center", 2.0), ("last", 3.0)),
+)
+def test_encoder_adapter_selects_configured_frame_from_5d_output(frame_selection, expected):
+    class IndexedVideoEncoder(torch.nn.Module):
+        def forward(self, video):
+            frames = torch.arange(4, dtype=video.dtype, device=video.device)
+            return frames.view(1, 1, 4, 1, 1).expand(video.shape[0], 16, 4, 8, 8)
+
+    adapter = EncoderAdapter(
+        IndexedVideoEncoder(),
+        latent_spec=LATENT_SPEC,
+        input_mode="rgb_video",
+        temporal_frames=4,
+        frame_selection=frame_selection,
+    )
+
+    latent = adapter(torch.rand(1, 3, 64, 64))
+
+    assert torch.all(latent == expected)
+
+
+def test_encoder_adapter_rejects_invalid_frame_selection():
+    with pytest.raises(ContractError, match="frame_selection.*first.*center.*last"):
+        EncoderAdapter(
+            MockWanEncoder(),
+            latent_spec=LATENT_SPEC,
+            input_mode="rgb_video",
+            frame_selection="middle",
+        )
+
+
 def test_video_teacher_encoder_preserves_bcthw_latent_layout():
     class VideoEncoder(torch.nn.Module):
         def forward(self, video):
@@ -103,6 +136,7 @@ def test_video_teacher_encoder_preserves_bcthw_latent_layout():
         latent_spec=LatentSpec("video", 16, "BCTHW", 8, 4, "video"),
         input_mode="rgb_video",
         temporal_frames=5,
+        frame_selection="last",
     )
 
     latent = adapter(torch.rand(1, 3, 64, 64))
@@ -145,6 +179,32 @@ def test_decoder_adapters_support_sparse_unconditional_and_conditional_models():
     assert wan_teacher(latent).shape == (1, 3, 64, 64)
 
 
+@pytest.mark.parametrize(
+    ("frame_selection", "expected"),
+    (("first", 0.0), ("center", 2.0), ("last", 3.0)),
+)
+def test_decoder_adapter_selects_configured_frame_from_5d_output(frame_selection, expected):
+    class IndexedVideoDecoder(torch.nn.Module):
+        def forward(self, latent):
+            frames = torch.arange(4, dtype=latent.dtype, device=latent.device)
+            return frames.view(1, 1, 4, 1, 1).expand(latent.shape[0], 3, 4, 64, 64)
+
+    adapter = DecoderAdapter(
+        IndexedVideoDecoder(),
+        output_mode="rgb",
+        frame_selection=frame_selection,
+    )
+
+    image = adapter(torch.rand(1, 16, 8, 8))
+
+    assert torch.all(image == expected)
+
+
+def test_decoder_adapter_rejects_invalid_frame_selection():
+    with pytest.raises(ContractError, match="frame_selection.*first.*center.*last"):
+        DecoderAdapter(MockWanDecoder(), output_mode="rgb", frame_selection="middle")
+
+
 def test_condition_adapter_normalizes_tensor_to_named_dictionary():
     adapter = ConditionEncoderAdapter(MockLQProjIn(feature_dim=32), temporal_frames=3)
 
@@ -165,6 +225,34 @@ def test_condition_adapter_normalizes_single_layer_list_to_features_key():
     condition = adapter(torch.rand(2, 3, 64, 64))
 
     assert set(condition) == {"features"}
+
+
+def test_condition_adapter_validates_bnc_layout_sampling_and_feature_dim():
+    spec = ConditionSpec("mock_lq_proj", "BNC", 32, "lq", "dit", 8, 5)
+    adapter = ConditionEncoderAdapter(
+        MockLQProjIn(feature_dim=32),
+        temporal_frames=5,
+        condition_spec=spec,
+    )
+
+    condition = adapter(torch.rand(2, 3, 64, 64))
+
+    assert condition["features"].shape == (2, 64, 32)
+
+
+def test_condition_adapter_rejects_wrong_bnc_layout():
+    class ChannelFirstCondition(torch.nn.Module):
+        def forward(self, video):
+            return torch.zeros(video.shape[0], 32, 64)
+
+    adapter = ConditionEncoderAdapter(
+        ChannelFirstCondition(),
+        temporal_frames=5,
+        condition_spec=ConditionSpec("condition", "BNC", 32, "lq", "dit", 8, 5),
+    )
+
+    with pytest.raises(ContractError, match="expected feature_dim=32"):
+        adapter(torch.rand(2, 3, 64, 64))
 
 
 def test_freeze_module_disables_parameter_gradients_but_not_input_gradient():

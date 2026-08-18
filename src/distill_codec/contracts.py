@@ -92,14 +92,20 @@ class ConditionSpec:
     feature_dim: int
     source: str
     consumer: str
+    spatial_downsample: int = 1
+    temporal_downsample: int = 1
 
     def __post_init__(self) -> None:
+        if self.layout not in {"BNC"}:
+            raise ContractError(f"layout must be BNC, got {self.layout!r}")
         if self.feature_dim <= 0:
             raise ContractError("feature_dim must be positive")
         if self.source not in {"lq", "gt", "cached"}:
             raise ContractError(f"source must be lq, gt, or cached, got {self.source!r}")
         if self.consumer not in {"dit", "decoder"}:
             raise ContractError(f"consumer must be dit or decoder, got {self.consumer!r}")
+        if self.spatial_downsample <= 0 or self.temporal_downsample <= 0:
+            raise ContractError("downsample factors must be positive")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -107,6 +113,39 @@ class ConditionSpec:
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> "ConditionSpec":
         return cls(**dict(values))
+
+    def validate_tensor(
+        self,
+        tensor: Tensor,
+        image_size: tuple[int, int] | None = None,
+        temporal_size: int | None = None,
+        batch_size: int | None = None,
+    ) -> None:
+        if tensor.ndim != 3:
+            raise ContractError(
+                f"expected layout={self.layout} (3 dims), actual shape={tuple(tensor.shape)}"
+            )
+        if tensor.shape[-1] != self.feature_dim:
+            raise ContractError(
+                f"expected feature_dim={self.feature_dim}, actual shape={tuple(tensor.shape)}"
+            )
+        if batch_size is not None and tensor.shape[0] != batch_size:
+            raise ContractError(
+                f"expected batch size={batch_size}, actual shape={tuple(tensor.shape)}"
+            )
+        if image_size is not None and temporal_size is not None:
+            spatial_tokens = 1
+            for size in image_size:
+                spatial_tokens *= size // self.spatial_downsample
+            temporal_tokens = (
+                temporal_size + self.temporal_downsample - 1
+            ) // self.temporal_downsample
+            expected_tokens = temporal_tokens * spatial_tokens
+            if tensor.shape[1] != expected_tokens:
+                raise ContractError(
+                    f"expected tokens={expected_tokens} for image_size={image_size} and "
+                    f"temporal_size={temporal_size}, actual shape={tuple(tensor.shape)}"
+                )
 
 
 @dataclass(frozen=True)

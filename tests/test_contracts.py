@@ -48,6 +48,8 @@ def test_condition_and_color_specs_validate_enums():
         feature_dim=1536,
         source="lq",
         consumer="dit",
+        spatial_downsample=16,
+        temporal_downsample=5,
     )
     color = ColorSpec(
         matrix="bt709",
@@ -62,8 +64,58 @@ def test_condition_and_color_specs_validate_enums():
 
     with pytest.raises(ContractError, match="consumer"):
         ConditionSpec("x", "BNC", 4, "lq", "vae")
+    with pytest.raises(ContractError, match="layout"):
+        ConditionSpec("x", "NC", 4, "lq", "dit")
+    with pytest.raises(ContractError, match="downsample factors must be positive"):
+        ConditionSpec("x", "BNC", 4, "lq", "dit", spatial_downsample=0)
     with pytest.raises(ContractError, match="matrix"):
         ColorSpec("unknown", "full", "Y00Y01Y10Y11UV", "top_left", "nearest")
+
+
+def test_condition_spec_defaults_preserve_legacy_config_construction():
+    spec = ConditionSpec.from_dict(
+        {
+            "family": "legacy",
+            "layout": "BNC",
+            "feature_dim": 8,
+            "source": "lq",
+            "consumer": "dit",
+        }
+    )
+
+    assert spec.spatial_downsample == 1
+    assert spec.temporal_downsample == 1
+
+
+def test_condition_spec_validates_bnc_tokens_and_feature_dimension():
+    spec = ConditionSpec("flash", "BNC", 32, "lq", "dit", 8, 5)
+
+    spec.validate_tensor(
+        torch.zeros(2, 64, 32),
+        image_size=(64, 64),
+        temporal_size=5,
+        batch_size=2,
+    )
+
+    with pytest.raises(ContractError, match="expected tokens=64"):
+        spec.validate_tensor(
+            torch.zeros(2, 63, 32),
+            image_size=(64, 64),
+            temporal_size=5,
+        )
+    with pytest.raises(ContractError, match="expected feature_dim=32"):
+        spec.validate_tensor(
+            torch.zeros(2, 64, 16),
+            image_size=(64, 64),
+            temporal_size=5,
+        )
+    with pytest.raises(ContractError, match="expected batch size=2"):
+        spec.validate_tensor(
+            torch.zeros(1, 64, 32),
+            image_size=(64, 64),
+            temporal_size=5,
+            batch_size=2,
+        )
 
 
 def test_distill_batch_requires_matching_rgb_batches_and_paths():
@@ -83,4 +135,3 @@ def test_distill_batch_requires_matching_rgb_batches_and_paths():
             gt_rgb=torch.zeros(2, 3, 64, 64),
             relative_path=("a.png",),
         )
-

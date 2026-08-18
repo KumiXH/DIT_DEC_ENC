@@ -13,7 +13,7 @@ components:
     adapter:
       kind: condition_encoder
       temporal_frames: 5
-      condition_spec: {family: flashvsr_lq_proj_v1_1, layout: BNC, feature_dim: 1536, source: lq, consumer: dit}
+      condition_spec: {family: flashvsr_lq_proj_v1_1, layout: BNC, feature_dim: 1536, source: lq, consumer: dit, spatial_downsample: 16, temporal_downsample: 5}
   tc_decoder:
     backend: snapshot
     factory: distill_codec.integrations.snapshots:create_tc_decoder

@@ -196,6 +196,7 @@ def build_components(config: Mapping[str, Any]) -> dict[str, nn.Module]:
                 input_mode=adapter["input_mode"],
                 color_spec=color_spec,
                 temporal_frames=adapter.get("temporal_frames", 1),
+                frame_selection=adapter.get("frame_selection", "center"),
             )
         elif kind == "decoder":
             result[name] = DecoderAdapter(
@@ -203,6 +204,7 @@ def build_components(config: Mapping[str, Any]) -> dict[str, nn.Module]:
                 output_mode=adapter["output_mode"],
                 color_spec=color_spec,
                 accepts_condition=adapter.get("accepts_condition", False),
+                frame_selection=adapter.get("frame_selection", "center"),
             )
         elif kind == "condition_encoder":
             condition_values = adapter.get("condition_spec")

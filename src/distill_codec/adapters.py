@@ -35,6 +35,23 @@ def _unwrap_tensor(output: object, component: str) -> Tensor:
     raise ContractError(f"{component} returned unsupported output type {type(output).__name__}")
 
 
+def _validate_frame_selection(frame_selection: str) -> None:
+    if frame_selection not in {"first", "center", "last"}:
+        raise ContractError(
+            f"frame_selection must be first, center, or last, got {frame_selection!r}"
+        )
+
+
+def _select_frame(tensor: Tensor, frame_selection: str) -> Tensor:
+    if frame_selection == "first":
+        index = 0
+    elif frame_selection == "last":
+        index = tensor.shape[2] - 1
+    else:
+        index = tensor.shape[2] // 2
+    return tensor[:, :, index]
+
+
 class EncoderAdapter(nn.Module):
     def __init__(
         self,
@@ -44,15 +61,18 @@ class EncoderAdapter(nn.Module):
         input_mode: str,
         color_spec: ColorSpec | None = None,
         temporal_frames: int = 1,
+        frame_selection: str = "center",
     ) -> None:
         super().__init__()
         if input_mode not in {"rgb", "rgb_video", "packed_6ch"}:
             raise ContractError(f"unsupported encoder input_mode {input_mode!r}")
+        _validate_frame_selection(frame_selection)
         self.module = module
         self.latent_spec = latent_spec
         self.input_mode = input_mode
         self.color_spec = color_spec or ColorSpec()
         self.temporal_frames = temporal_frames
+        self.frame_selection = frame_selection
 
     def forward(self, rgb: Tensor) -> Tensor:
         if self.input_mode == "packed_6ch":
@@ -63,7 +83,7 @@ class EncoderAdapter(nn.Module):
             model_input = rgb
         latent = _unwrap_tensor(self.module(model_input), "encoder")
         if latent.ndim == 5 and self.latent_spec.layout == "BCHW":
-            latent = latent[:, :, latent.shape[2] // 2]
+            latent = _select_frame(latent, self.frame_selection)
         image_size = (int(rgb.shape[-2]), int(rgb.shape[-1]))
         temporal_size = self.temporal_frames if self.input_mode == "rgb_video" else 1
         self.latent_spec.validate_tensor(
@@ -82,14 +102,17 @@ class DecoderAdapter(nn.Module):
         output_mode: str,
         color_spec: ColorSpec | None = None,
         accepts_condition: bool = False,
+        frame_selection: str = "center",
     ) -> None:
         super().__init__()
         if output_mode not in {"rgb", "sparse_yuv"}:
             raise ContractError(f"unsupported decoder output_mode {output_mode!r}")
+        _validate_frame_selection(frame_selection)
         self.module = module
         self.output_mode = output_mode
         self.color_spec = color_spec or ColorSpec()
         self.accepts_condition = accepts_condition
+        self.frame_selection = frame_selection
 
     def forward(self, latent: Tensor, condition: Tensor | None = None) -> Tensor:
         if self.accepts_condition:
@@ -100,7 +123,7 @@ class DecoderAdapter(nn.Module):
             output = self.module(latent)
         image = _unwrap_tensor(output, "decoder")
         if image.ndim == 5:
-            image = image[:, :, image.shape[2] // 2]
+            image = _select_frame(image, self.frame_selection)
         if self.output_mode == "sparse_yuv":
             image = sparse_yuv420_to_rgb(image, self.color_spec)
         if image.ndim != 4 or image.shape[1] != 3:
@@ -137,9 +160,11 @@ class ConditionEncoderAdapter(nn.Module):
             raise ContractError(f"condition encoder returned unsupported output type {type(output).__name__}")
         if self.condition_spec is not None:
             for name, value in result.items():
-                if value.shape[-1] != self.condition_spec.feature_dim:
-                    raise ContractError(
-                        f"condition {name!r} expected feature_dim={self.condition_spec.feature_dim}, "
-                        f"got shape={tuple(value.shape)}"
+                try:
+                    self.condition_spec.validate_tensor(
+                        value,
+                        batch_size=int(rgb.shape[0]),
                     )
+                except ContractError as error:
+                    raise ContractError(f"condition {name!r} violates its contract: {error}") from error
         return result
