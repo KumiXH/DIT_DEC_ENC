@@ -4,7 +4,7 @@ import importlib.util
 from importlib.resources import files
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import torch
 from torch import Tensor, nn
@@ -107,9 +107,10 @@ class WanEncoderWrapper(nn.Module):
         if rgb_video.ndim != 5:
             raise ContractError(f"Wan encoder expects [B,C,T,H,W], got {tuple(rgb_video.shape)}")
         video = rgb_video.mul(2.0).sub(1.0)
-        if hasattr(self.vae, "single_encode"):
-            return self.vae.single_encode(video, _module_device(self.vae, self.device_name))
-        return self.vae.encode(video)
+        vae = cast(Any, self.vae)
+        if hasattr(vae, "single_encode"):
+            return vae.single_encode(video, _module_device(self.vae, self.device_name))
+        return vae.encode(video)
 
 
 class WanDecoderWrapper(nn.Module):
@@ -121,10 +122,11 @@ class WanDecoderWrapper(nn.Module):
     def forward(self, latent: Tensor) -> Tensor:
         if latent.ndim == 4:
             latent = latent.unsqueeze(2)
-        if hasattr(self.vae, "single_decode"):
-            video = self.vae.single_decode(latent, _module_device(self.vae, self.device_name))
+        vae = cast(Any, self.vae)
+        if hasattr(vae, "single_decode"):
+            video = vae.single_decode(latent, _module_device(self.vae, self.device_name))
         else:
-            video = self.vae.decode(latent)
+            video = vae.decode(latent)
         return video.add(1.0).mul(0.5)
 
 
@@ -158,9 +160,10 @@ class FlashVSRTCDecoderWrapper(nn.Module):
         condition = lq_rgb.mul(2.0).sub(1.0).unsqueeze(2).expand(
             -1, -1, self.condition_frames, -1, -1
         )
-        if hasattr(self.decoder, "clean_mem"):
-            self.decoder.clean_mem()
-        output = self.decoder.decode_video(latent_video, parallel=False, cond=condition)
+        decoder = cast(Any, self.decoder)
+        if hasattr(decoder, "clean_mem"):
+            decoder.clean_mem()
+        output = decoder.decode_video(latent_video, parallel=False, cond=condition)
         if output.ndim != 5:
             raise ContractError(f"TCDecoder returned expected NTCHW video, got {tuple(output.shape)}")
         return output[:, output.shape[1] // 2]

@@ -81,10 +81,12 @@ def packed_6ch_to_rgb(
     if tuple(y.shape[-2:]) != tuple(target_size):
         raise ContractError(f"packed luma resolves to {tuple(y.shape[-2:])}, requested {target_size}")
     mode = spec.chroma_upsample
-    interpolate_kwargs = {"size": target_size, "mode": mode}
     if mode == "bilinear":
-        interpolate_kwargs["align_corners"] = False
-    chroma = F.interpolate(packed[:, 4:], **interpolate_kwargs)
+        chroma = F.interpolate(
+            packed[:, 4:], size=target_size, mode=mode, align_corners=False
+        )
+    else:
+        chroma = F.interpolate(packed[:, 4:], size=target_size, mode=mode)
     return yuv_to_rgb(torch.cat((y, chroma), dim=1), spec)
 
 
@@ -95,9 +97,17 @@ def sparse_yuv420_to_rgb(sparse_yuv: Tensor, spec: ColorSpec | None = None) -> T
     if height % 2 or width % 2:
         raise ContractError(f"sparse YUV requires even height and width, got {(height, width)}")
     chroma_samples = sparse_yuv[:, 1:, 0::2, 0::2]
-    kwargs = {"size": (height, width), "mode": spec.chroma_upsample}
     if spec.chroma_upsample == "bilinear":
-        kwargs["align_corners"] = False
-    chroma = F.interpolate(chroma_samples, **kwargs)
+        chroma = F.interpolate(
+            chroma_samples,
+            size=(height, width),
+            mode=spec.chroma_upsample,
+            align_corners=False,
+        )
+    else:
+        chroma = F.interpolate(
+            chroma_samples,
+            size=(height, width),
+            mode=spec.chroma_upsample,
+        )
     return yuv_to_rgb(torch.cat((sparse_yuv[:, :1], chroma), dim=1), spec)
-

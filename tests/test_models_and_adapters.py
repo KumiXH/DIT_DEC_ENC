@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from distill_codec.adapters import (
@@ -7,7 +8,7 @@ from distill_codec.adapters import (
     freeze_module,
     repeat_video_frames,
 )
-from distill_codec.contracts import ColorSpec, LatentSpec
+from distill_codec.contracts import ColorSpec, ContractError, LatentSpec
 from distill_codec.factories import build_from_factory
 from distill_codec.models.mock import (
     MockConditionalStudentDecoder,
@@ -90,6 +91,39 @@ def test_video_teacher_encoder_normalizes_single_frame_output():
 
     assert latent.shape == (1, 16, 8, 8)
     assert repeat_video_frames(torch.zeros(1, 3, 4, 4), 3).shape == (1, 3, 3, 4, 4)
+
+
+def test_video_teacher_encoder_preserves_bcthw_latent_layout():
+    class VideoEncoder(torch.nn.Module):
+        def forward(self, video):
+            return torch.zeros(video.shape[0], 16, 2, 8, 8)
+
+    adapter = EncoderAdapter(
+        VideoEncoder(),
+        latent_spec=LatentSpec("video", 16, "BCTHW", 8, 4, "video"),
+        input_mode="rgb_video",
+        temporal_frames=5,
+    )
+
+    latent = adapter(torch.rand(1, 3, 64, 64))
+
+    assert latent.shape == (1, 16, 2, 8, 8)
+
+
+def test_video_teacher_encoder_rejects_wrong_bcthw_temporal_size():
+    class VideoEncoder(torch.nn.Module):
+        def forward(self, video):
+            return torch.zeros(video.shape[0], 16, 1, 8, 8)
+
+    adapter = EncoderAdapter(
+        VideoEncoder(),
+        latent_spec=LatentSpec("video", 16, "BCTHW", 8, 4, "video"),
+        input_mode="rgb_video",
+        temporal_frames=5,
+    )
+
+    with pytest.raises(ContractError, match="expected temporal size=2"):
+        adapter(torch.rand(1, 3, 64, 64))
 
 
 def test_decoder_adapters_support_sparse_unconditional_and_conditional_models():

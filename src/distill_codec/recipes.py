@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from .adapters import freeze_module
-from .contracts import ContractError, DistillBatch
+from .contracts import ContractError, DistillBatch, LatentSpec
 from .color import rgb_to_yuv
 from .losses import LPIPSLoss, channel_stat_loss, cosine_loss, edge_loss, latent_smooth_l1
 from .metrics import psnr, ssim
@@ -85,7 +85,7 @@ class DistillationRecipe(nn.Module):
             raise ContractError(f"recipe {name!r} is missing components: {sorted(missing)}")
         self.name = name
         self.weights = {**DEFAULT_WEIGHTS, **dict(weights or {})}
-        selected = {key: components[key] for key in REQUIRED_COMPONENTS[name]}
+        selected = {key: components[key] for key in sorted(REQUIRED_COMPONENTS[name])}
         if name in {
             "wan_decoder_distill",
             "flashvsr_decoder_unconditional_student",
@@ -94,10 +94,14 @@ class DistillationRecipe(nn.Module):
             if "latent_provider" in components:
                 selected["latent_provider"] = components["latent_provider"]
             elif "teacher_encoder" in components:
+                teacher_encoder = components["teacher_encoder"]
+                latent_spec = getattr(teacher_encoder, "latent_spec", None)
+                if not isinstance(latent_spec, LatentSpec):
+                    raise ContractError("teacher_encoder must expose a LatentSpec as latent_spec")
                 selected["latent_provider"] = TeacherEncoderLatentProvider(
-                    components["teacher_encoder"],
+                    teacher_encoder,
                     source="gt",
-                    latent_spec=components["teacher_encoder"].latent_spec,
+                    latent_spec=latent_spec,
                 )
             else:
                 raise ContractError(f"recipe {name!r} requires latent_provider or teacher_encoder")

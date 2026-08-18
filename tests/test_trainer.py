@@ -1,9 +1,14 @@
 import json
+import os
+import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
 import torch
 
+from distill_codec.contracts import ContractError
 from distill_codec.config import build_components, load_config
 from distill_codec.data import create_mock_dataset
 from distill_codec.recipes import build_recipe
@@ -78,6 +83,173 @@ def test_trainer_updates_student_saves_artifacts_and_resumes(tmp_path):
     assert resumed.start_step == 2
 
 
+def test_multi_component_resume_is_stable_across_python_hash_seeds(tmp_path):
+    paths = create_mock_dataset(tmp_path / "data", count=4, size=(32, 32), seed=5)
+    config_path = Path("configs/smoke/wan_autoencoder.yaml").resolve()
+    output_dir = tmp_path / "run"
+    pythonpath = os.pathsep.join(
+        filter(None, (str(Path("src").resolve()), os.environ.get("PYTHONPATH")))
+    )
+
+    def run_training(hash_seed: int, max_steps: int, resume: Path | None = None):
+        command = [
+            sys.executable,
+            "-m",
+            "distill_codec.cli",
+            "train",
+            "--config",
+            str(config_path),
+            "--set",
+            f"data.lq_root={paths.lq_root}",
+            "--set",
+            f"data.gt_root={paths.gt_root}",
+            "--set",
+            "data.lq_size=[32,32]",
+            "--set",
+            "data.gt_size=[32,32]",
+            "--set",
+            f"run.output_dir={output_dir}",
+            "--set",
+            f"trainer.max_steps={max_steps}",
+            "--set",
+            "trainer.tensorboard=false",
+        ]
+        if resume is not None:
+            command.extend(("--resume", str(resume)))
+        env = {**os.environ, "PYTHONHASHSEED": str(hash_seed), "PYTHONPATH": pythonpath}
+        return subprocess.run(command, capture_output=True, text=True, env=env, check=False)
+
+    first = run_training(hash_seed=1, max_steps=1)
+    assert first.returncode == 0, first.stdout + first.stderr
+    checkpoint = output_dir / "checkpoints" / "step_00000001.pt"
+
+    resumed = run_training(hash_seed=2, max_steps=2, resume=checkpoint)
+
+    assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+    assert (output_dir / "checkpoints" / "step_00000002.pt").is_file()
+
+
+def test_trainer_builds_configured_adam_optimizer(tmp_path):
+    config = _training_config(tmp_path, max_steps=1)
+    config["trainer"]["optimizer"] = "adam"
+
+    trainer = _make_trainer(config)
+
+    assert type(trainer.optimizer) is torch.optim.Adam
+
+
+def test_trainer_rejects_unknown_optimizer(tmp_path):
+    config = _training_config(tmp_path, max_steps=1)
+    config["trainer"]["optimizer"] = "sgd"
+
+    with pytest.raises(ContractError, match="unsupported optimizer 'sgd'"):
+        _make_trainer(config)
+
+
+def test_trainer_keeps_only_latest_configured_checkpoints(tmp_path):
+    config = _training_config(tmp_path, max_steps=3)
+    config["trainer"]["keep_last_checkpoints"] = 2
+
+    _make_trainer(config).fit()
+
+    checkpoints = sorted((tmp_path / "run" / "checkpoints").glob("step_*.pt"))
+    assert [path.name for path in checkpoints] == ["step_00000002.pt", "step_00000003.pt"]
+
+
+def test_trainer_rejects_nonpositive_checkpoint_retention(tmp_path):
+    config = _training_config(tmp_path, max_steps=1)
+    config["trainer"]["keep_last_checkpoints"] = 0
+
+    with pytest.raises(ContractError, match="keep_last_checkpoints must be positive"):
+        _make_trainer(config)
+
+
+def test_resume_rejects_changed_optimizer(tmp_path):
+    config = _training_config(tmp_path, max_steps=1)
+    checkpoint = _make_trainer(config).fit().latest_checkpoint
+    incompatible = deepcopy(config)
+    incompatible["trainer"]["max_steps"] = 2
+    incompatible["trainer"]["optimizer"] = "adam"
+
+    with pytest.raises(ValueError, match="incompatible training contract.*optimizer"):
+        _make_trainer(incompatible).fit(resume=checkpoint)
+
+
+def test_resume_rejects_changed_optimizer_parameter_order(tmp_path):
+    config = _training_config(tmp_path, max_steps=1)
+    checkpoint = _make_trainer(config).fit().latest_checkpoint
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    payload["optimizer_parameter_names"] = ["unexpected.parameter"]
+    incompatible_checkpoint = checkpoint.with_name("incompatible_parameter_order.pt")
+    torch.save(payload, incompatible_checkpoint)
+    resumed_config = deepcopy(config)
+    resumed_config["trainer"]["max_steps"] = 2
+
+    with pytest.raises(ValueError, match="optimizer parameter order"):
+        _make_trainer(resumed_config).fit(resume=incompatible_checkpoint)
+
+
+def test_cosine_resume_matches_uninterrupted_with_fixed_scheduler_horizon(tmp_path):
+    uninterrupted_config = _training_config(tmp_path / "uninterrupted_cosine", max_steps=4)
+    uninterrupted_config["trainer"].update(
+        {"scheduler": "cosine", "scheduler_max_steps": 4, "validate_every": 4}
+    )
+    uninterrupted = _make_trainer(uninterrupted_config).fit()
+    uninterrupted_payload = torch.load(uninterrupted.latest_checkpoint, map_location="cpu", weights_only=False)
+
+    staged_config = _training_config(tmp_path / "staged_cosine", max_steps=2)
+    staged_config["trainer"].update(
+        {"scheduler": "cosine", "scheduler_max_steps": 4, "validate_every": 2}
+    )
+    first_stage = _make_trainer(staged_config).fit()
+    resumed_config = deepcopy(staged_config)
+    resumed_config["trainer"].update({"max_steps": 4, "validate_every": 4})
+    resumed = _make_trainer(resumed_config).fit(resume=first_stage.latest_checkpoint)
+    resumed_payload = torch.load(resumed.latest_checkpoint, map_location="cpu", weights_only=False)
+
+    assert resumed_payload["scheduler"]["T_max"] == 4
+    for component, state in uninterrupted_payload["student_state"].items():
+        for name, value in state.items():
+            assert torch.equal(value, resumed_payload["student_state"][component][name])
+
+
+def test_resume_rejects_changed_cosine_scheduler_horizon(tmp_path):
+    config = _training_config(tmp_path, max_steps=1)
+    config["trainer"].update({"scheduler": "cosine", "scheduler_max_steps": 4})
+    checkpoint = _make_trainer(config).fit().latest_checkpoint
+    incompatible = deepcopy(config)
+    incompatible["trainer"].update({"max_steps": 2, "scheduler_max_steps": 8})
+
+    with pytest.raises(ValueError, match="incompatible training contract.*scheduler_max_steps"):
+        _make_trainer(incompatible).fit(resume=checkpoint)
+
+
+def test_resume_discards_checkpoints_from_abandoned_future_trajectory(tmp_path):
+    config = _training_config(tmp_path, max_steps=3)
+    completed = _make_trainer(config).fit()
+    checkpoint_one = completed.output_dir / "checkpoints" / "step_00000001.pt"
+    resumed_config = deepcopy(config)
+    resumed_config["trainer"].update({"max_steps": 2, "keep_last_checkpoints": 2})
+
+    _make_trainer(resumed_config).fit(resume=checkpoint_one)
+
+    checkpoints = sorted((completed.output_dir / "checkpoints").glob("step_*.pt"))
+    assert [path.name for path in checkpoints] == ["step_00000001.pt", "step_00000002.pt"]
+
+
+def test_noop_resume_applies_checkpoint_retention(tmp_path):
+    config = _training_config(tmp_path, max_steps=3)
+    completed = _make_trainer(config).fit()
+    resumed_config = deepcopy(config)
+    resumed_config["trainer"]["keep_last_checkpoints"] = 2
+
+    resumed = _make_trainer(resumed_config).fit(resume=completed.latest_checkpoint)
+
+    assert resumed.start_step == resumed.global_step == 3
+    checkpoints = sorted((completed.output_dir / "checkpoints").glob("step_*.pt"))
+    assert [path.name for path in checkpoints] == ["step_00000002.pt", "step_00000003.pt"]
+
+
 def test_resume_rejects_changed_latent_contract(tmp_path):
     config = _training_config(tmp_path, max_steps=1)
     checkpoint = _make_trainer(config).fit().latest_checkpoint
@@ -85,8 +257,6 @@ def test_resume_rejects_changed_latent_contract(tmp_path):
     incompatible["latent_spec"]["family"] = "different_family"
 
     trainer = _make_trainer(incompatible)
-
-    import pytest
 
     with pytest.raises(ValueError, match="incompatible latent contract"):
         trainer.fit(resume=checkpoint)

@@ -87,7 +87,7 @@ class MockConditionalStudentDecoder(_LatentDecoder):
     def __init__(self, latent_channels: int = 16, condition_channels: int = 3, seed: int = 501) -> None:
         super().__init__(latent_channels + condition_channels, 3, seed)
 
-    def forward(self, latent: Tensor, condition_rgb: Tensor) -> Tensor:
+    def forward(self, latent: Tensor, condition_rgb: Tensor) -> Tensor:  # type: ignore[override]
         condition = F.interpolate(condition_rgb, size=latent.shape[-2:], mode="bilinear", align_corners=False)
         return super().forward(torch.cat((latent, condition), dim=1))
 
@@ -107,4 +107,3 @@ class MockLQProjIn(nn.Module):
         image = video.mean(dim=2) if video.ndim == 5 else video
         features = self.projection(F.adaptive_avg_pool2d(image, (8, 8)))
         return features.flatten(2).transpose(1, 2)
-

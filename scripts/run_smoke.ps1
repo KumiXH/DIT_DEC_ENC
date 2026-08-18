@@ -9,9 +9,6 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $outputPath = Join-Path $projectRoot $OutputRoot
 $dataPath = Join-Path $outputPath "data"
 $runsPath = Join-Path $outputPath "runs"
-$sourcePath = Join-Path $projectRoot "src"
-$previousPythonPath = $env:PYTHONPATH
-$env:PYTHONPATH = if ($previousPythonPath) { "$sourcePath;$previousPythonPath" } else { $sourcePath }
 
 function Invoke-CheckedPython {
     & $PythonExe @args
@@ -43,7 +40,18 @@ foreach ($configName in $configs) {
         --set "data.lq_size=[32,32]" `
         --set "data.gt_size=[32,32]" `
         --set "run.output_dir=$runPath" `
-        --set "trainer.max_steps=1"
-}
+        --set "trainer.max_steps=1" `
+        --set "trainer.tensorboard=true"
 
-$env:PYTHONPATH = $previousPythonPath
+    $checkpointPath = Join-Path $runPath "checkpoints/step_00000001.pt"
+    Invoke-CheckedPython -m distill_codec.cli train `
+        --config $configPath `
+        --set "data.lq_root=$($dataPath)/lq" `
+        --set "data.gt_root=$($dataPath)/gt" `
+        --set "data.lq_size=[32,32]" `
+        --set "data.gt_size=[32,32]" `
+        --set "run.output_dir=$runPath" `
+        --set "trainer.max_steps=2" `
+        --set "trainer.tensorboard=true" `
+        --resume $checkpointPath
+}

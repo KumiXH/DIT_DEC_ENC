@@ -26,6 +26,15 @@ def test_powershell_smoke_runner_parses():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_powershell_smoke_runner_uses_installed_package_resume_and_tensorboard():
+    script = Path("scripts/run_smoke.ps1").read_text(encoding="utf-8")
+
+    assert "$sourcePath" not in script
+    assert "PYTHONPATH" not in script
+    assert "--resume" in script
+    assert "trainer.tensorboard=true" in script
+
+
 def test_cli_make_data_probe_train_and_resume(tmp_path, capsys):
     data_root = tmp_path / "data"
     assert main(["make-mock-data", "--output", str(data_root), "--count", "4", "--size", "32"]) == 0

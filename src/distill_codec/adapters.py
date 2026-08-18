@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-import torch
 from torch import Tensor, nn
 
 from .color import rgb_to_packed_6ch, sparse_yuv420_to_rgb
@@ -63,9 +62,15 @@ class EncoderAdapter(nn.Module):
         else:
             model_input = rgb
         latent = _unwrap_tensor(self.module(model_input), "encoder")
-        if latent.ndim == 5:
+        if latent.ndim == 5 and self.latent_spec.layout == "BCHW":
             latent = latent[:, :, latent.shape[2] // 2]
-        self.latent_spec.validate_tensor(latent, image_size=tuple(rgb.shape[-2:]))
+        image_size = (int(rgb.shape[-2]), int(rgb.shape[-1]))
+        temporal_size = self.temporal_frames if self.input_mode == "rgb_video" else 1
+        self.latent_spec.validate_tensor(
+            latent,
+            image_size=image_size,
+            temporal_size=temporal_size,
+        )
         return latent
 
 

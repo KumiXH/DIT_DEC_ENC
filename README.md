@@ -248,7 +248,21 @@ tensorboard/                  # tensorboard: true 时
 distill-codec train --config config.yaml --resume runs/example/checkpoints/step_00001000.pt
 ```
 
-Checkpoint 保存学生、optimizer、scheduler、AMP scaler、RNG、完整配置和 latent/color/condition 契约，不复制教师权重。
+Checkpoint 保存学生、optimizer、optimizer 参数名顺序、scheduler、AMP scaler、RNG、完整配置和 latent/color/condition 契约，不复制教师权重。当前版本可以稳定恢复同时训练编码器和解码器的多学生 recipe；旧版 checkpoint 若包含多个可训练组件但没有参数顺序信息，会明确拒绝恢复，避免静默错配 Adam 状态。
+
+训练器可以选择 AdamW 或 Adam，并限制 step checkpoint 数量：
+
+```yaml
+trainer:
+  optimizer: adamw             # adamw 或 adam，默认 adamw
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine            # none 或 cosine，默认 none
+  scheduler_max_steps: 10000   # cosine 的固定周期；分段 resume 时不要修改
+  keep_last_checkpoints: 5     # 必须为正数；不配置则保留全部
+```
+
+`max_steps` 可以控制本次运行先停在哪一步；使用 cosine 时，`scheduler_max_steps` 表示完整训练周期，必须在首次运行前设定，并在所有 resume 阶段保持一致。恢复时会严格检查 optimizer、学习率、weight decay、scheduler 和 scheduler 周期。
 
 模型组件可配置 `sha256`；设置后会在构造模型前校验 checkpoint。LPIPS 默认关闭，设置 `recipe.weights.lpips` 为非零前先安装：
 

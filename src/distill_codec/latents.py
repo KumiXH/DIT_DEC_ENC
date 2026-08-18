@@ -14,7 +14,8 @@ class LatentProvider(nn.Module):
         self.latent_spec = latent_spec
 
     def _validate(self, latent: Tensor, batch: DistillBatch) -> Tensor:
-        self.latent_spec.validate_tensor(latent, image_size=tuple(batch.gt_rgb.shape[-2:]))
+        image_size = (int(batch.gt_rgb.shape[-2]), int(batch.gt_rgb.shape[-1]))
+        self.latent_spec.validate_tensor(latent, image_size=image_size)
         return latent
 
 
@@ -29,7 +30,8 @@ class TeacherEncoderLatentProvider(LatentProvider):
     def forward(self, batch: DistillBatch) -> Tensor:
         image = batch.gt_rgb if self.source == "gt" else batch.lq_rgb
         latent = self.encoder(image)
-        self.latent_spec.validate_tensor(latent, image_size=tuple(image.shape[-2:]))
+        image_size = (int(image.shape[-2]), int(image.shape[-1]))
+        self.latent_spec.validate_tensor(latent, image_size=image_size)
         return latent
 
 

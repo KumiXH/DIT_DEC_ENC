@@ -54,7 +54,12 @@ class LatentSpec:
         if mismatches:
             raise ContractError("incompatible latent contract: " + "; ".join(mismatches))
 
-    def validate_tensor(self, tensor: Tensor, image_size: tuple[int, int] | None = None) -> None:
+    def validate_tensor(
+        self,
+        tensor: Tensor,
+        image_size: tuple[int, int] | None = None,
+        temporal_size: int | None = None,
+    ) -> None:
         expected_ndim = 4 if self.layout == "BCHW" else 5
         if tensor.ndim != expected_ndim:
             raise ContractError(
@@ -64,6 +69,13 @@ class LatentSpec:
             raise ContractError(
                 f"expected channels={self.channels}, actual shape={tuple(tensor.shape)}"
             )
+        if self.layout == "BCTHW" and temporal_size is not None:
+            expected_temporal = (temporal_size + self.temporal_downsample - 1) // self.temporal_downsample
+            if tensor.shape[2] != expected_temporal:
+                raise ContractError(
+                    f"expected temporal size={expected_temporal} for temporal_size={temporal_size}, "
+                    f"actual shape={tuple(tensor.shape)}"
+                )
         if image_size is not None:
             expected_hw = tuple(size // self.spatial_downsample for size in image_size)
             if tuple(tensor.shape[-2:]) != expected_hw:

@@ -35,3 +35,14 @@ where = ["src"]
 addopts = "-ra"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+extend-exclude = ["src/distill_codec/vendor", "third_party"]
+
+[tool.mypy]
+exclude = ["src/distill_codec/vendor", "third_party"]
+disable_error_code = ["import-untyped"]
+
+[[tool.mypy.overrides]]
+module = "lpips"
+ignore_missing_imports = true

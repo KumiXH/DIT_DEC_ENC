@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 import torch
 import torch.nn.functional as F
@@ -113,10 +113,14 @@ def collate_distill_batch(samples: Sequence[Mapping[str, object]]) -> DistillBat
     if any(has_latent) and not all(has_latent):
         raise ContractError("either every sample must contain latent or none may contain latent")
     return DistillBatch(
-        lq_rgb=torch.stack([sample["lq_rgb"] for sample in samples]),
-        gt_rgb=torch.stack([sample["gt_rgb"] for sample in samples]),
+        lq_rgb=torch.stack([cast(Tensor, sample["lq_rgb"]) for sample in samples]),
+        gt_rgb=torch.stack([cast(Tensor, sample["gt_rgb"]) for sample in samples]),
         relative_path=tuple(str(sample["relative_path"]) for sample in samples),
-        latent=torch.stack([sample["latent"] for sample in samples]) if all(has_latent) else None,
+        latent=(
+            torch.stack([cast(Tensor, sample["latent"]) for sample in samples])
+            if all(has_latent)
+            else None
+        ),
     )
 
 

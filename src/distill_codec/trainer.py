@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterator, Mapping
 
 import torch
 from torch.utils.data import DataLoader
@@ -70,18 +69,44 @@ class Trainer:
         parameters = list(self.recipe.trainable_parameters())
         if not parameters:
             raise ContractError(f"recipe {self.recipe.name!r} has no trainable parameters")
-        self.optimizer = torch.optim.AdamW(
-            parameters,
-            lr=float(trainer_config.get("learning_rate", 1e-4)),
-            weight_decay=float(trainer_config.get("weight_decay", 0.0)),
-        )
+        optimizer_name = trainer_config.get("optimizer", "adamw")
+        learning_rate = float(trainer_config.get("learning_rate", 1e-4))
+        weight_decay = float(trainer_config.get("weight_decay", 0.0))
+        self.optimizer: torch.optim.Optimizer
+        if optimizer_name == "adamw":
+            self.optimizer = torch.optim.AdamW(
+                parameters,
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            )
+        elif optimizer_name == "adam":
+            self.optimizer = torch.optim.Adam(
+                parameters,
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            )
+        else:
+            raise ContractError(f"unsupported optimizer {optimizer_name!r}")
         scheduler_name = trainer_config.get("scheduler", "none")
         self.scheduler = None
         if scheduler_name == "cosine":
-            max_steps = max(1, int(trainer_config.get("max_steps", 1)))
-            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=max_steps)
+            scheduler_max_steps = int(
+                trainer_config.get("scheduler_max_steps", trainer_config.get("max_steps", 1))
+            )
+            if scheduler_max_steps <= 0:
+                raise ContractError("scheduler_max_steps must be positive")
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=scheduler_max_steps,
+            )
         elif scheduler_name != "none":
             raise ContractError(f"unsupported scheduler {scheduler_name!r}")
+        keep_last_checkpoints = trainer_config.get("keep_last_checkpoints")
+        self.keep_last_checkpoints = (
+            None if keep_last_checkpoints is None else int(keep_last_checkpoints)
+        )
+        if self.keep_last_checkpoints is not None and self.keep_last_checkpoints <= 0:
+            raise ContractError("keep_last_checkpoints must be positive")
         self.amp_enabled = bool(trainer_config.get("amp", True)) and self.device.type == "cuda"
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled)
         self.logger = JsonlLogger(self.output_dir / "metrics.jsonl")
@@ -109,14 +134,24 @@ class Trainer:
             gt_size=tuple(data_config["gt_size"]) if data_config.get("gt_size") else None,
         )
         trainer_config = config.get("trainer", {})
-        common = {
-            "batch_size": int(trainer_config.get("batch_size", 1)),
-            "num_workers": int(trainer_config.get("num_workers", 0)),
-            "collate_fn": collate_distill_batch,
-        }
+        batch_size = int(trainer_config.get("batch_size", 1))
+        num_workers = int(trainer_config.get("num_workers", 0))
         generator = torch.Generator().manual_seed(int(config.get("run", {}).get("seed", 0)))
-        train = DataLoader(dataset, shuffle=True, generator=generator, **common)
-        validation = DataLoader(dataset, shuffle=False, **common)
+        train = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            generator=generator,
+            num_workers=num_workers,
+            collate_fn=collate_distill_batch,
+        )
+        validation = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=collate_distill_batch,
+        )
         return train, validation
 
     def _set_training_modes(self) -> None:
@@ -125,7 +160,28 @@ class Trainer:
             if not any(parameter.requires_grad for parameter in component.parameters()):
                 component.eval()
 
-    def _infinite_batches(self) -> Iterable[tuple[int, DistillBatch]]:
+    def _prune_checkpoints(self, latest_checkpoint: Path) -> None:
+        if self.keep_last_checkpoints is None:
+            return
+        checkpoint_dir = self.output_dir / "checkpoints"
+        checkpoints = sorted(checkpoint_dir.glob("step_*.pt"))
+        latest_resolved = latest_checkpoint.resolve()
+        older_checkpoints = [path for path in checkpoints if path.resolve() != latest_resolved]
+        remove_count = max(0, len(checkpoints) - self.keep_last_checkpoints)
+        for path in older_checkpoints[:remove_count]:
+            path.unlink()
+
+    def _discard_future_checkpoints(self, global_step: int) -> None:
+        checkpoint_dir = self.output_dir / "checkpoints"
+        for path in checkpoint_dir.glob("step_*.pt"):
+            try:
+                step = int(path.stem.removeprefix("step_"))
+            except ValueError:
+                continue
+            if step > global_step:
+                path.unlink()
+
+    def _infinite_batches(self) -> Iterator[tuple[int, DistillBatch]]:
         epoch = 0
         while True:
             for batch in self.train_loader:
@@ -157,8 +213,11 @@ class Trainer:
             epoch = int(payload["epoch"])
             best_metrics = dict(payload.get("best_metrics", {}))
             data_batches_consumed = int(payload.get("data_batches_consumed", global_step * accumulation))
+            self._discard_future_checkpoints(global_step)
         start_step = global_step
         latest_checkpoint = Path(resume) if resume is not None else self.output_dir / "checkpoints" / "initial.pt"
+        if resume is not None:
+            self._prune_checkpoints(latest_checkpoint)
         batches = self._infinite_batches()
         for _ in range(data_batches_consumed):
             next(batches)
@@ -212,6 +271,7 @@ class Trainer:
                     config=self.config,
                     best_metrics=best_metrics,
                 )
+                self._prune_checkpoints(latest_checkpoint)
         if self.tensorboard is not None:
             self.tensorboard.flush()
             self.tensorboard.close()
