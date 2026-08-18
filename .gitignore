@@ -1,0 +1,22 @@
+.worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Training artifacts and model weights
+runs/
+outputs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
