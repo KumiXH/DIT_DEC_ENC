@@ -1,0 +1,16 @@
+components:
+  teacher_condition_encoder:
+    backend: external
+    factory: your_flashvsr_adapter:create_lq_proj_in
+    checkpoint: D:/weights/flashvsr.ckpt
+    kwargs: {}
+    freeze: true
+    adapter: {kind: condition_encoder, temporal_frames: 3}
+  tc_decoder:
+    backend: external
+    factory: your_flashvsr_adapter:create_tc_decoder
+    checkpoint: D:/weights/TCDecoder.ckpt
+    kwargs: {}
+    freeze: true
+    adapter: {kind: decoder, output_mode: rgb, accepts_condition: true}
+
