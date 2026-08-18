@@ -15,6 +15,7 @@ build/
 runs/
 outputs/
 checkpoints/
+work/
 *.pt
 *.pth
 *.ckpt

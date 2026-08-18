@@ -91,3 +91,22 @@ def test_resume_rejects_changed_latent_contract(tmp_path):
     with pytest.raises(ValueError, match="incompatible latent contract"):
         trainer.fit(resume=checkpoint)
 
+
+def test_resume_matches_uninterrupted_training_data_order_and_parameters(tmp_path):
+    uninterrupted_config = _training_config(tmp_path / "uninterrupted", max_steps=4)
+    uninterrupted_config["trainer"].update({"gradient_accumulation": 2, "validate_every": 4})
+    uninterrupted = _make_trainer(uninterrupted_config).fit()
+    uninterrupted_payload = torch.load(uninterrupted.latest_checkpoint, map_location="cpu", weights_only=False)
+
+    staged_config = _training_config(tmp_path / "staged", max_steps=2)
+    staged_config["trainer"].update({"gradient_accumulation": 2, "validate_every": 2})
+    first_stage = _make_trainer(staged_config).fit()
+    resumed_config = deepcopy(staged_config)
+    resumed_config["trainer"].update({"max_steps": 4, "validate_every": 4})
+    resumed = _make_trainer(resumed_config).fit(resume=first_stage.latest_checkpoint)
+    resumed_payload = torch.load(resumed.latest_checkpoint, map_location="cpu", weights_only=False)
+
+    assert resumed_payload["data_batches_consumed"] == 8
+    for component, state in uninterrupted_payload["student_state"].items():
+        for name, value in state.items():
+            assert torch.equal(value, resumed_payload["student_state"][component][name])

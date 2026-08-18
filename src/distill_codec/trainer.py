@@ -92,6 +92,11 @@ class Trainer:
             except ImportError as error:
                 raise ContractError("tensorboard logging requested; install distill-codec[train]") from error
             self.tensorboard = SummaryWriter(self.output_dir / "tensorboard")
+        if config.get("latent_provider", {}).get("type") == "dataset":
+            raise ContractError(
+                "the standard paired-image Trainer cannot use the dataset latent provider; "
+                "use type='cached' or provide a custom Dataset/Trainer that populates DistillBatch.latent"
+            )
         self.train_loader, self.validation_loader = self._build_loaders(config)
 
     @staticmethod
@@ -137,6 +142,7 @@ class Trainer:
         global_step = 0
         epoch = 0
         best_metrics: dict[str, float] = {}
+        data_batches_consumed = 0
         if resume is not None:
             payload = load_checkpoint(
                 resume,
@@ -150,9 +156,12 @@ class Trainer:
             global_step = int(payload["global_step"])
             epoch = int(payload["epoch"])
             best_metrics = dict(payload.get("best_metrics", {}))
+            data_batches_consumed = int(payload.get("data_batches_consumed", global_step * accumulation))
         start_step = global_step
         latest_checkpoint = Path(resume) if resume is not None else self.output_dir / "checkpoints" / "initial.pt"
         batches = self._infinite_batches()
+        for _ in range(data_batches_consumed):
+            next(batches)
         self.optimizer.zero_grad(set_to_none=True)
         while global_step < max_steps:
             self._set_training_modes()
@@ -174,6 +183,7 @@ class Trainer:
                     )
                 self.scaler.scale(loss).backward()
                 accumulated_output = output
+                data_batches_consumed += 1
             if clip_grad > 0:
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(list(self.recipe.trainable_parameters()), clip_grad)
@@ -198,6 +208,7 @@ class Trainer:
                     scaler=self.scaler,
                     global_step=global_step,
                     epoch=epoch,
+                    data_batches_consumed=data_batches_consumed,
                     config=self.config,
                     best_metrics=best_metrics,
                 )
@@ -217,6 +228,11 @@ class Trainer:
                 self.output_dir / "validation" / f"step_{global_step:08d}.png",
                 output.images,
             )
+            if self.tensorboard is not None:
+                for name, image in output.images.items():
+                    self.tensorboard.add_image(
+                        f"validation/{name}", image[0].detach().clamp(0, 1).cpu(), global_step
+                    )
         return {name: float(value.detach().cpu()) for name, value in output.metrics.items()}
 
     def _log_output(self, phase: str, global_step: int, output: RecipeOutput) -> None:
@@ -232,4 +248,3 @@ class Trainer:
             for name, value in event.items():
                 if isinstance(value, torch.Tensor):
                     self.tensorboard.add_scalar(f"{phase}/{name}", float(value.detach().cpu()), global_step)
-

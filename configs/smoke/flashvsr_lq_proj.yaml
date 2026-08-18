@@ -6,14 +6,13 @@ components:
     backend: mock
     model: lq_proj_in
     kwargs: {feature_dim: 32, seed: 702}
-    adapter: {kind: condition_encoder, temporal_frames: 3, condition_spec: {family: mock_lq_proj, layout: BNC, feature_dim: 32, source: lq, consumer: dit}}
+    adapter: {kind: condition_encoder, temporal_frames: 5, condition_spec: {family: mock_lq_proj, layout: BNC, feature_dim: 32, source: lq, consumer: dit}}
   teacher_condition_encoder:
     backend: mock
     model: lq_proj_in
     kwargs: {feature_dim: 32, seed: 701}
     freeze: true
-    adapter: {kind: condition_encoder, temporal_frames: 3, condition_spec: {family: mock_lq_proj, layout: BNC, feature_dim: 32, source: lq, consumer: dit}}
+    adapter: {kind: condition_encoder, temporal_frames: 5, condition_spec: {family: mock_lq_proj, layout: BNC, feature_dim: 32, source: lq, consumer: dit}}
 data: {lq_root: ../../work/mock_data/lq, gt_root: ../../work/mock_data/gt, lq_size: [64, 64], gt_size: [64, 64]}
 trainer: {batch_size: 2, learning_rate: 0.001, max_steps: 2, validate_every: 1, checkpoint_every: 1, num_workers: 0, amp: false}
 run: {output_dir: ../../runs/flashvsr_lq_proj_smoke, seed: 7}
-

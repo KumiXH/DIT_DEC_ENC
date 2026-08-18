@@ -8,6 +8,7 @@ from typing import Sequence
 import torch
 
 from .config import apply_overrides, build_components, load_config
+from .contracts import ContractError
 from .data import PairedImageDataset, collate_distill_batch, create_mock_dataset
 from .recipes import build_recipe
 from .trainer import Trainer
@@ -48,6 +49,17 @@ def _load_recipe(config_path: str, overrides: list[str]):
 
 def _probe(config_path: str, overrides: list[str]) -> int:
     config, recipe = _load_recipe(config_path, overrides)
+    if config.get("latent_provider", {}).get("type") == "dataset":
+        raise ContractError(
+            "probe cannot use the dataset latent provider with the standard paired-image dataset; "
+            "use type='cached' or a custom probe that populates DistillBatch.latent"
+        )
+    trainer_config = config.get("trainer", {})
+    requested_device = trainer_config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(requested_device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("probe requested CUDA but torch.cuda.is_available() is false")
+    recipe.to(device)
     data = config["data"]
     dataset = PairedImageDataset(
         data["lq_root"],
@@ -56,7 +68,7 @@ def _probe(config_path: str, overrides: list[str]) -> int:
         gt_size=tuple(data["gt_size"]) if data.get("gt_size") else None,
     )
     batch_size = min(int(config.get("trainer", {}).get("batch_size", 1)), len(dataset))
-    batch = collate_distill_batch([dataset[index] for index in range(batch_size)])
+    batch = collate_distill_batch([dataset[index] for index in range(batch_size)]).to(device)
     output = recipe(batch)
     result = {
         "recipe": recipe.name,
@@ -65,6 +77,7 @@ def _probe(config_path: str, overrides: list[str]) -> int:
         "losses": {name: float(value.detach()) for name, value in output.losses.items()},
         "images": {name: list(value.shape) for name, value in output.images.items()},
         "metadata": output.metadata,
+        "device": str(device),
     }
     print(json.dumps(result, sort_keys=True))
     return 0
@@ -101,4 +114,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

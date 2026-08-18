@@ -55,6 +55,7 @@ def save_checkpoint(
     scaler: torch.amp.GradScaler,
     global_step: int,
     epoch: int,
+    data_batches_consumed: int,
     config: Mapping[str, Any],
     best_metrics: Mapping[str, float],
 ) -> Path:
@@ -68,10 +69,16 @@ def save_checkpoint(
         "scaler": scaler.state_dict(),
         "global_step": global_step,
         "epoch": epoch,
+        "data_batches_consumed": data_batches_consumed,
         "config": dict(config),
         "contracts": {
             "latent_spec": dict(config["latent_spec"]),
             "color_spec": dict(config.get("color", {})),
+            "condition_specs": {
+                name: dict(values["adapter"]["condition_spec"])
+                for name, values in config.get("components", {}).items()
+                if values.get("adapter", {}).get("condition_spec")
+            },
         },
         "best_metrics": dict(best_metrics),
         "rng_state": capture_rng_state(),
@@ -102,6 +109,16 @@ def load_checkpoint(
     saved_color = ColorSpec.from_dict(payload["contracts"].get("color_spec", {}))
     if expected_color != saved_color:
         raise ValueError(f"incompatible color contract: expected={expected_color}, saved={saved_color}")
+    expected_conditions = {
+        name: values["adapter"]["condition_spec"]
+        for name, values in config.get("components", {}).items()
+        if values.get("adapter", {}).get("condition_spec")
+    }
+    if expected_conditions != payload["contracts"].get("condition_specs", {}):
+        raise ValueError(
+            f"incompatible condition contracts: expected={expected_conditions}, "
+            f"saved={payload['contracts'].get('condition_specs', {})}"
+        )
     current_trainable = trainable_component_state(components)
     if set(current_trainable) != set(payload["student_state"]):
         raise ValueError(
@@ -116,4 +133,3 @@ def load_checkpoint(
     scaler.load_state_dict(payload["scaler"])
     restore_rng_state(payload["rng_state"])
     return payload
-

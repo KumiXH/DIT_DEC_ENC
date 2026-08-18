@@ -41,10 +41,18 @@ def test_dataset_reports_missing_counterparts(tmp_path):
 def test_dataset_rejects_configured_size_mismatch(tmp_path):
     _write_rgb(tmp_path / "lq" / "a.png", size=(7, 8))
     _write_rgb(tmp_path / "gt" / "a.png", size=(16, 16))
-    dataset = PairedImageDataset(tmp_path / "lq", tmp_path / "gt", lq_size=(8, 8))
-
     with pytest.raises(ContractError, match="a.png.*expected LQ size"):
-        dataset[0]
+        PairedImageDataset(tmp_path / "lq", tmp_path / "gt", lq_size=(8, 8))
+
+
+def test_dataset_preflight_rejects_corrupt_image(tmp_path):
+    lq = tmp_path / "lq" / "a.png"
+    lq.parent.mkdir(parents=True)
+    lq.write_bytes(b"not an image")
+    _write_rgb(tmp_path / "gt" / "a.png")
+
+    with pytest.raises(ContractError, match="cannot decode image.*a.png"):
+        PairedImageDataset(tmp_path / "lq", tmp_path / "gt")
 
 
 def test_mock_dataset_is_deterministic_and_strictly_paired(tmp_path):
@@ -58,4 +66,3 @@ def test_mock_dataset_is_deterministic_and_strictly_paired(tmp_path):
     assert torch.equal(first_dataset[0]["lq_rgb"], second_dataset[0]["lq_rgb"])
     assert torch.equal(first_dataset[0]["gt_rgb"], second_dataset[0]["gt_rgb"])
     assert not torch.equal(first_dataset[0]["lq_rgb"], first_dataset[0]["gt_rgb"])
-

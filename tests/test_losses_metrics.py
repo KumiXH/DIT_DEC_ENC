@@ -1,9 +1,11 @@
-from pathlib import Path
+import builtins
 
+import pytest
 import torch
 
 from distill_codec.adapters import freeze_module
-from distill_codec.losses import channel_stat_loss, cosine_loss, edge_loss, latent_smooth_l1
+from distill_codec.contracts import ContractError
+from distill_codec.losses import LPIPSLoss, channel_stat_loss, cosine_loss, edge_loss, latent_smooth_l1
 from distill_codec.metrics import psnr, save_validation_grid, ssim
 from distill_codec.models.mock import MockWanDecoder
 
@@ -68,3 +70,16 @@ def test_validation_grid_writes_five_equal_panels(tmp_path):
     with Image.open(output) as grid:
         assert grid.size == (8 * 5, 8)
 
+
+def test_lpips_missing_dependency_has_actionable_install_hint(monkeypatch):
+    real_import = builtins.__import__
+
+    def import_without_lpips(name, *args, **kwargs):
+        if name == "lpips":
+            raise ImportError("lpips unavailable for test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_lpips)
+
+    with pytest.raises(ContractError, match=r"install distill-codec\[perceptual\]"):
+        LPIPSLoss()

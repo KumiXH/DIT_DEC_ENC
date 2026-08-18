@@ -1,9 +1,9 @@
 components:
   teacher_condition_encoder:
-    backend: external
+    backend: snapshot
     factory: distill_codec.integrations.snapshots:create_lq_proj_in
     kwargs:
-      source_file: D:/src/FlashVSR/examples/WanVSR/utils/utils.py
+      source_file: ../../third_party/flashvsr/utils.py
       checkpoint: D:/weights/LQ_proj_in.ckpt
       class_name: Causal_LQ4x_Proj
       in_dim: 3
@@ -15,10 +15,10 @@ components:
       temporal_frames: 5
       condition_spec: {family: flashvsr_lq_proj_v1_1, layout: BNC, feature_dim: 1536, source: lq, consumer: dit}
   tc_decoder:
-    backend: external
+    backend: snapshot
     factory: distill_codec.integrations.snapshots:create_tc_decoder
     kwargs:
-      source_file: D:/src/FlashVSR/examples/WanVSR/utils/TCDecoder.py
+      source_file: ../../third_party/flashvsr/TCDecoder.py
       checkpoint: D:/weights/TCDecoder.ckpt
       device: cuda
       dtype: bfloat16

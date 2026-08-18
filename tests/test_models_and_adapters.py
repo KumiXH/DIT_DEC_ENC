@@ -39,6 +39,27 @@ def test_import_string_factory_and_checkpoint_round_trip(tmp_path):
     assert torch.equal(next(original.parameters()), next(restored.parameters()))
 
 
+def test_external_factory_checkpoint_uses_safe_tensor_only_load(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "weights.pt"
+    checkpoint.write_bytes(b"placeholder")
+    source = build_from_factory("tests.support_factories:create_encoder", {"channels": 16})
+    calls = []
+
+    def fake_load(path, **kwargs):
+        calls.append(kwargs)
+        return source.state_dict()
+
+    monkeypatch.setattr(torch, "load", fake_load)
+
+    build_from_factory(
+        "tests.support_factories:create_encoder",
+        {"channels": 16},
+        checkpoint=checkpoint,
+    )
+
+    assert calls == [{"map_location": "cpu", "weights_only": True}]
+
+
 def test_student_encoder_adapter_uses_packed_input_and_keeps_gradients():
     module = MockStudentEncoder(latent_channels=16)
     adapter = EncoderAdapter(
@@ -100,6 +121,18 @@ def test_condition_adapter_normalizes_tensor_to_named_dictionary():
     assert condition["features"].shape[-1] == 32
 
 
+def test_condition_adapter_normalizes_single_layer_list_to_features_key():
+    class SingleLayer(torch.nn.Module):
+        def forward(self, video):
+            return [torch.zeros(video.shape[0], 8, 32)]
+
+    adapter = ConditionEncoderAdapter(SingleLayer(), temporal_frames=5)
+
+    condition = adapter(torch.rand(2, 3, 64, 64))
+
+    assert set(condition) == {"features"}
+
+
 def test_freeze_module_disables_parameter_gradients_but_not_input_gradient():
     decoder = freeze_module(MockWanDecoder())
     latent = torch.rand(1, 16, 8, 8, requires_grad=True)
@@ -109,4 +142,3 @@ def test_freeze_module_disables_parameter_gradients_but_not_input_gradient():
     assert latent.grad is not None and latent.grad.abs().sum() > 0
     assert not decoder.training
     assert all(not parameter.requires_grad for parameter in decoder.parameters())
-

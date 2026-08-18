@@ -123,7 +123,11 @@ class ConditionEncoderAdapter(nn.Module):
         elif isinstance(output, Mapping) and all(isinstance(value, Tensor) for value in output.values()):
             result = dict(output)
         elif isinstance(output, (tuple, list)) and all(isinstance(value, Tensor) for value in output):
-            result = {f"features_{index}": value for index, value in enumerate(output)}
+            result = (
+                {"features": output[0]}
+                if len(output) == 1
+                else {f"features_{index}": value for index, value in enumerate(output)}
+            )
         else:
             raise ContractError(f"condition encoder returned unsupported output type {type(output).__name__}")
         if self.condition_spec is not None:
@@ -134,4 +138,3 @@ class ConditionEncoderAdapter(nn.Module):
                         f"got shape={tuple(value.shape)}"
                     )
         return result
-

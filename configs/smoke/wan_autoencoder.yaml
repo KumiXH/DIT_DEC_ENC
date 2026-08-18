@@ -1,0 +1,11 @@
+latent_spec: {family: mock_wan, channels: 16, layout: BCHW, spatial_downsample: 8, temporal_downsample: 1, normalization: mock_wan}
+color: {matrix: bt709, range: full, packed_order: Y00Y01Y10Y11UV, chroma_location: top_left, chroma_upsample: nearest}
+recipe: {name: wan_autoencoder_distill, weights: {latent: 1.0, cos: 0.1, stat: 0.1, compat: 0.1, teacher: 1.0, gt: 0.5, edge: 0.1}}
+components:
+  student_encoder: {backend: mock, model: student_encoder, adapter: {kind: encoder, input_mode: packed_6ch}}
+  teacher_encoder: {backend: mock, model: wan_encoder, freeze: true, adapter: {kind: encoder, input_mode: rgb_video, temporal_frames: 3}}
+  teacher_decoder: {backend: mock, model: wan_decoder, freeze: true, adapter: {kind: decoder, output_mode: rgb}}
+  student_decoder: {backend: mock, model: student_decoder, adapter: {kind: decoder, output_mode: sparse_yuv}}
+data: {lq_root: ../../work/mock_data/lq, gt_root: ../../work/mock_data/gt, lq_size: [64, 64], gt_size: [64, 64]}
+trainer: {batch_size: 2, learning_rate: 0.001, max_steps: 2, validate_every: 1, checkpoint_every: 1, num_workers: 0, amp: false}
+run: {output_dir: ../../runs/wan_autoencoder_smoke, seed: 7}

@@ -132,6 +132,7 @@ class DistillBatch:
     lq_rgb: Tensor
     gt_rgb: Tensor
     relative_path: tuple[str, ...]
+    latent: Tensor | None = None
 
     def __post_init__(self) -> None:
         for name, tensor in (("lq_rgb", self.lq_rgb), ("gt_rgb", self.gt_rgb)):
@@ -144,6 +145,10 @@ class DistillBatch:
                 f"relative_path length={len(self.relative_path)} does not match "
                 f"batch size={self.lq_rgb.shape[0]}"
             )
+        if self.latent is not None and self.latent.shape[0] != self.lq_rgb.shape[0]:
+            raise ContractError(
+                f"latent batch size={self.latent.shape[0]} does not match RGB batch size={self.lq_rgb.shape[0]}"
+            )
 
     @property
     def batch_size(self) -> int:
@@ -154,5 +159,5 @@ class DistillBatch:
             lq_rgb=self.lq_rgb.to(device),
             gt_rgb=self.gt_rgb.to(device),
             relative_path=self.relative_path,
+            latent=self.latent.to(device) if self.latent is not None else None,
         )
-

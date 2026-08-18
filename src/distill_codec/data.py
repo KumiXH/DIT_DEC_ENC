@@ -69,6 +69,7 @@ class PairedImageDataset(Dataset[dict[str, object]]):
                 f"only in LQ={only_lq or '[]'}; only in GT={only_gt or '[]'}"
             )
         self._pairs = tuple((relative, lq_files[relative], gt_files[relative]) for relative in sorted(lq_files))
+        self._preflight()
 
     @property
     def relative_paths(self) -> tuple[str, ...]:
@@ -84,6 +85,13 @@ class PairedImageDataset(Dataset[dict[str, object]]):
         self._validate_size(relative, "LQ", lq, self.lq_size)
         self._validate_size(relative, "GT", gt, self.gt_size)
         return {"lq_rgb": lq, "gt_rgb": gt, "relative_path": relative}
+
+    def _preflight(self) -> None:
+        for relative, lq_path, gt_path in self._pairs:
+            lq = _load_rgb(lq_path)
+            gt = _load_rgb(gt_path)
+            self._validate_size(relative, "LQ", lq, self.lq_size)
+            self._validate_size(relative, "GT", gt, self.gt_size)
 
     @staticmethod
     def _validate_size(
@@ -101,10 +109,14 @@ class PairedImageDataset(Dataset[dict[str, object]]):
 def collate_distill_batch(samples: Sequence[Mapping[str, object]]) -> DistillBatch:
     if not samples:
         raise ContractError("cannot collate an empty sample list")
+    has_latent = ["latent" in sample and sample["latent"] is not None for sample in samples]
+    if any(has_latent) and not all(has_latent):
+        raise ContractError("either every sample must contain latent or none may contain latent")
     return DistillBatch(
         lq_rgb=torch.stack([sample["lq_rgb"] for sample in samples]),
         gt_rgb=torch.stack([sample["gt_rgb"] for sample in samples]),
         relative_path=tuple(str(sample["relative_path"]) for sample in samples),
+        latent=torch.stack([sample["latent"] for sample in samples]) if all(has_latent) else None,
     )
 
 
@@ -155,4 +167,3 @@ def create_mock_dataset(
         _tensor_to_image(gt, gt_root / relative)
         _tensor_to_image(lq, lq_root / relative)
     return MockDatasetPaths(lq_root=lq_root, gt_root=gt_root)
-

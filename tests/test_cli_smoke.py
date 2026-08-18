@@ -1,7 +1,29 @@
 import json
 from pathlib import Path
+import subprocess
+
+import pytest
 
 from distill_codec.cli import main
+from distill_codec.contracts import ContractError
+
+
+def test_powershell_smoke_runner_parses():
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            "$errors=$null; [void][System.Management.Automation.Language.Parser]::ParseFile("
+            "(Resolve-Path 'scripts/run_smoke.ps1'), [ref]$null, [ref]$errors); "
+            "if ($errors.Count) { $errors | ForEach-Object { $_.Message }; exit 1 }",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_cli_make_data_probe_train_and_resume(tmp_path, capsys):
@@ -71,3 +93,26 @@ def test_cli_probe_conditional_and_lq_proj_recipes(tmp_path):
         )
         assert code == 0
 
+
+def test_cli_probe_rejects_dataset_latent_provider_without_custom_dataset(tmp_path):
+    data_root = tmp_path / "data"
+    main(["make-mock-data", "--output", str(data_root), "--count", "2", "--size", "32"])
+
+    with pytest.raises(ContractError, match="probe.*dataset latent provider"):
+        main(
+            [
+                "probe",
+                "--config",
+                "configs/smoke/wan_decoder.yaml",
+                "--set",
+                "latent_provider.type=dataset",
+                "--set",
+                f"data.lq_root={data_root / 'lq'}",
+                "--set",
+                f"data.gt_root={data_root / 'gt'}",
+                "--set",
+                "data.lq_size=[32,32]",
+                "--set",
+                "data.gt_size=[32,32]",
+            ]
+        )

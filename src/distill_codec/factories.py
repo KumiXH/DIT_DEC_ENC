@@ -36,8 +36,7 @@ def build_from_factory(
         checkpoint_path = Path(checkpoint)
         if not checkpoint_path.is_file():
             raise ContractError(f"checkpoint does not exist: {checkpoint_path}")
-        payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
         state_dict = payload.get("state_dict", payload) if isinstance(payload, dict) else payload
         module.load_state_dict(state_dict, strict=strict)
     return module
-
