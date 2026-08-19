@@ -245,7 +245,7 @@ python -m distill_codec.cli train `
 
 ### 7. 权重和输出位置
 
-仓库不包含任何真实模型权重，也不会自动下载权重。配置模板默认使用以下占位位置，你可以把文件手动拷贝到这些路径，或直接修改 YAML：
+仓库不包含任何真实模型权重，也不会自动把权重上传到 Git。配置模板使用以下本地路径；本次已从 FlashVSR v1.1 发布目录下载并核验前三个教师文件：
 
 ```text
 D:/weights/Wan2.1_VAE.pth       # Wan VAE Encoder + Decoder，共用一份
@@ -255,7 +255,15 @@ D:/weights/student_encoder.pth  # 你的黑盒学生 Encoder（可选）
 D:/weights/student_decoder.pth  # 你的黑盒学生 Decoder（可选）
 ```
 
-当前机器上这些真实权重文件都不存在，所以无法诚实地报告它们的 GiB 大小。把文件放好后可以直接统计：
+官方来源：[`JunhaoZhuang/FlashVSR-v1.1`](https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1)。本次下载使用可访问的 Hugging Face 镜像，文件 SHA-256 与官方 LFS 元数据一致：
+
+| 文件 | 字节数 | MiB | SHA-256 |
+| --- | ---: | ---: | --- |
+| `Wan2.1_VAE.pth` | `507,609,880` | `484.095` | `38071ab59bd94681c686fa51d75a1968f64e470262043be31f7a094e442fd981` |
+| `LQ_proj_in.ckpt` | `575,694,948` | `549.025` | `d6d011cdaaba6a52645086caa08fa04124e746f6ca568140a24007591142bfd2` |
+| `TCDecoder.ckpt` | `189,018,333` | `180.262` | `e224bdcf2f52745cbf4d393ff5374c2ba09e90285d5d19062d2bf63b915b6161` |
+
+三份教师权重合计 `1,272,323,161 bytes`，约 `1.272 GB / 1.185 GiB`。当前配置已经可以直接从 `D:/weights` 加载它们。把文件放好后也可以用下面的命令重新统计：
 
 ```powershell
 Get-ChildItem D:/weights -File | Where-Object {
