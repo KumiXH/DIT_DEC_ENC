@@ -57,6 +57,71 @@ RECIPE_COMPONENTS = {
 }
 
 
+def _config_location(config: Mapping[str, Any]) -> str:
+    return str(config.get("_config_path", "<in-memory config>"))
+
+
+def _require_mapping(
+    values: Mapping[str, Any],
+    key: str,
+    *,
+    path: str,
+    location: str,
+) -> Mapping[str, Any]:
+    if key not in values:
+        raise ContractError(f"config requires {path}; config={location}")
+    child = values[key]
+    if not isinstance(child, Mapping):
+        raise ContractError(f"config field {path} must be a mapping; config={location}")
+    return child
+
+
+def preflight_config(config: Mapping[str, Any]) -> None:
+    location = _config_location(config)
+    recipe = _require_mapping(config, "recipe", path="recipe.name", location=location)
+    recipe_name = recipe.get("name")
+    if not isinstance(recipe_name, str) or not recipe_name:
+        raise ContractError(f"config requires recipe.name; config={location}")
+    if recipe_name not in RECIPE_COMPONENTS:
+        raise ContractError(
+            f"config recipe.name={recipe_name!r} is unknown; "
+            f"available={sorted(RECIPE_COMPONENTS)}; config={location}"
+        )
+    if "latent_spec" not in config:
+        raise ContractError(f"config requires latent_spec; config={location}")
+    if "color" not in config:
+        raise ContractError(f"config requires color; config={location}")
+    try:
+        LatentSpec.from_dict(_require_mapping(config, "latent_spec", path="latent_spec", location=location))
+        ColorSpec.from_dict(_require_mapping(config, "color", path="color", location=location))
+    except (ContractError, TypeError) as error:
+        raise ContractError(f"invalid tensor/color contract: {error}; config={location}") from error
+    data = _require_mapping(config, "data", path="data", location=location)
+    for name in ("lq_root", "gt_root"):
+        if not data.get(name):
+            raise ContractError(f"config requires data.{name}; config={location}")
+    components = _require_mapping(config, "components", path="components", location=location)
+    required = set(RECIPE_COMPONENTS[recipe_name])
+    provider = config.get("latent_provider")
+    if provider is not None and not isinstance(provider, Mapping):
+        raise ContractError(f"config field latent_provider must be a mapping; config={location}")
+    if recipe_name in {
+        "wan_decoder_distill",
+        "flashvsr_decoder_unconditional_student",
+        "flashvsr_decoder_conditional_student",
+    } and (provider is None or provider.get("type", "teacher_encoder") == "teacher_encoder"):
+        required.add("teacher_encoder")
+    for name in sorted(required):
+        if name not in components:
+            raise ContractError(f"config requires components.{name}; config={location}")
+        if not isinstance(components[name], Mapping):
+            raise ContractError(
+                f"config field components.{name} must be a mapping; config={location}"
+            )
+    if isinstance(provider, Mapping) and provider.get("type") == "cached" and not provider.get("root"):
+        raise ContractError(f"config requires latent_provider.root; config={location}")
+
+
 def _resolve_paths(value: Any, base_dir: Path, key: str | None = None) -> Any:
     if isinstance(value, dict):
         return {child_key: _resolve_paths(child, base_dir, child_key) for child_key, child in value.items()}
@@ -171,8 +236,10 @@ def _build_module(name: str, values: Mapping[str, Any]) -> nn.Module:
 def build_components(config: Mapping[str, Any]) -> dict[str, nn.Module]:
     if "latent_spec" not in config:
         raise ContractError("config requires latent_spec")
+    if "color" not in config:
+        raise ContractError("config requires color")
     latent_spec = LatentSpec.from_dict(config["latent_spec"])
-    color_spec = ColorSpec.from_dict(config.get("color", {}))
+    color_spec = ColorSpec.from_dict(config["color"])
     recipe_name = config.get("recipe", {}).get("name")
     required = set(RECIPE_COMPONENTS.get(recipe_name, config.get("components", {}).keys()))
     provider_values = config.get("latent_provider")

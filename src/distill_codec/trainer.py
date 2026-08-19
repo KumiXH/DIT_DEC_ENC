@@ -10,8 +10,10 @@ import torch
 from torch.utils.data import DataLoader
 
 from .checkpoint import load_checkpoint, save_checkpoint
+from .config import preflight_config
 from .contracts import ContractError, DistillBatch
 from .data import PairedImageDataset, collate_distill_batch
+from .latents import CachedLatentProvider
 from .metrics import save_validation_grid
 from .recipes import DistillationRecipe, RecipeOutput
 
@@ -53,6 +55,12 @@ class JsonlLogger:
 
 class Trainer:
     def __init__(self, config: Mapping[str, Any], recipe: DistillationRecipe) -> None:
+        preflight_config(config)
+        if recipe.name != config["recipe"]["name"]:
+            raise ContractError(
+                f"trainer recipe={recipe.name!r} does not match config recipe.name="
+                f"{config['recipe']['name']!r}; config={config.get('_config_path', '<in-memory config>')}"
+            )
         self.config = dict(config)
         self.recipe = recipe
         run_config = config.get("run", {})
@@ -123,6 +131,16 @@ class Trainer:
                 "use type='cached' or provide a custom Dataset/Trainer that populates DistillBatch.latent"
             )
         self.train_loader, self.validation_loader = self._build_loaders(config)
+        latent_provider = (
+            self.recipe.components["latent_provider"]
+            if "latent_provider" in self.recipe.components
+            else None
+        )
+        if isinstance(latent_provider, CachedLatentProvider):
+            dataset = self.train_loader.dataset
+            if not isinstance(dataset, PairedImageDataset):
+                raise ContractError("cached latent preflight requires PairedImageDataset")
+            latent_provider.preflight(dataset.gt_sizes_by_relative)
 
     @staticmethod
     def _build_loaders(config: Mapping[str, Any]) -> tuple[DataLoader, DataLoader]:
@@ -233,7 +251,7 @@ class Trainer:
                     enabled=self.amp_enabled,
                     dtype=torch.float16,
                 ):
-                    output = self.recipe(batch)
+                    output = self.recipe(batch, global_step=global_step + 1)
                     loss = output.total_loss / accumulation
                 if not torch.isfinite(loss):
                     raise FloatingPointError(
@@ -281,7 +299,7 @@ class Trainer:
     def validate(self, global_step: int) -> dict[str, float]:
         self.recipe.eval()
         batch = next(iter(self.validation_loader)).to(self.device)
-        output = self.recipe(batch)
+        output = self.recipe(batch, global_step=global_step)
         self._log_output("validation", global_step, output)
         if output.images:
             save_validation_grid(

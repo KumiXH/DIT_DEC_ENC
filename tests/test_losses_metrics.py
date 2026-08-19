@@ -71,6 +71,25 @@ def test_validation_grid_writes_five_equal_panels(tmp_path):
         assert grid.size == (8 * 5, 8)
 
 
+def test_validation_grid_fifth_panel_is_color_absolute_error_heatmap(tmp_path):
+    images = {
+        "lq": torch.zeros(3, 2, 2),
+        "gt": torch.zeros(3, 2, 2),
+        "teacher": torch.zeros(3, 2, 2),
+        "student": torch.full((3, 2, 2), 0.5),
+    }
+    output = tmp_path / "grid.png"
+
+    save_validation_grid(output, images)
+
+    from PIL import Image
+
+    with Image.open(output) as grid:
+        heatmap_pixel = grid.getpixel((8, 0))
+    assert len(set(heatmap_pixel)) > 1
+    assert heatmap_pixel != (128, 128, 128)
+
+
 def test_lpips_missing_dependency_has_actionable_install_hint(monkeypatch):
     real_import = builtins.__import__
 

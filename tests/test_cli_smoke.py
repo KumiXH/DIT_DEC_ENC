@@ -60,6 +60,17 @@ def test_cli_make_data_probe_train_and_resume(tmp_path, capsys):
     probe = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert probe["recipe"] == "flashvsr_decoder_unconditional_student"
     assert probe["trainable_parameters"] > 0
+    assert probe["preflight"] == {
+        "pair_count": 4,
+        "relative_paths": [
+            "scene_00/frame_0000.png",
+            "scene_00/frame_0001.png",
+            "scene_01/frame_0002.png",
+            "scene_01/frame_0003.png",
+        ],
+        "lq_sizes": [[32, 32]],
+        "gt_sizes": [[32, 32]],
+    }
 
     assert main(["train", *common, "--set", "trainer.max_steps=1"]) == 0
     checkpoint = run_root / "checkpoints" / "step_00000001.pt"
@@ -115,6 +126,40 @@ def test_cli_probe_rejects_dataset_latent_provider_without_custom_dataset(tmp_pa
                 "configs/smoke/wan_decoder.yaml",
                 "--set",
                 "latent_provider.type=dataset",
+                "--set",
+                f"data.lq_root={data_root / 'lq'}",
+                "--set",
+                f"data.gt_root={data_root / 'gt'}",
+                "--set",
+                "data.lq_size=[32,32]",
+                "--set",
+                "data.gt_size=[32,32]",
+            ]
+        )
+
+
+def test_cli_probe_preflights_all_cached_latent_samples(tmp_path):
+    data_root = tmp_path / "data"
+    latent_root = tmp_path / "latents"
+    latent_root.mkdir()
+    main(["make-mock-data", "--output", str(data_root), "--count", "2", "--size", "32"])
+    import torch
+
+    from distill_codec.config import load_config
+
+    config = load_config("configs/smoke/wan_decoder.yaml")
+    torch.save({"latent_spec": config["latent_spec"]}, latent_root / "manifest.pt")
+
+    with pytest.raises(ContractError, match="cached latent sample set mismatch.*missing"):
+        main(
+            [
+                "probe",
+                "--config",
+                "configs/smoke/wan_decoder.yaml",
+                "--set",
+                "latent_provider.type=cached",
+                "--set",
+                f"latent_provider.root={latent_root}",
                 "--set",
                 f"data.lq_root={data_root / 'lq'}",
                 "--set",

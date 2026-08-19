@@ -30,6 +30,22 @@ def test_dataset_matches_nested_relative_paths_and_collates(tmp_path):
     assert 0.0 <= batch.lq_rgb.min() <= batch.lq_rgb.max() <= 1.0
 
 
+def test_dataset_exposes_preflight_report(tmp_path):
+    lq_root = tmp_path / "lq"
+    gt_root = tmp_path / "gt"
+    _write_rgb(lq_root / "a.png", size=(8, 6), value=64)
+    _write_rgb(gt_root / "a.png", size=(16, 12), value=192)
+    _write_rgb(lq_root / "nested" / "b.png", size=(8, 6), value=64)
+    _write_rgb(gt_root / "nested" / "b.png", size=(16, 12), value=192)
+
+    dataset = PairedImageDataset(lq_root, gt_root)
+
+    assert dataset.preflight_report.pair_count == 2
+    assert dataset.preflight_report.relative_paths == ("a.png", "nested/b.png")
+    assert dataset.preflight_report.lq_sizes == ((6, 8),)
+    assert dataset.preflight_report.gt_sizes == ((12, 16),)
+
+
 def test_dataset_reports_missing_counterparts(tmp_path):
     _write_rgb(tmp_path / "lq" / "only_lq.png")
     _write_rgb(tmp_path / "gt" / "only_gt.png")

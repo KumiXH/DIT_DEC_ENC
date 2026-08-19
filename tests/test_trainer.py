@@ -46,6 +46,7 @@ def _make_trainer(config):
         components,
         config["recipe"].get("weights"),
         source=config["recipe"].get("source", "gt"),
+        compatibility_every=config["recipe"].get("compatibility_every", 1),
     )
     return Trainer(config, recipe)
 
@@ -146,6 +147,27 @@ def test_trainer_rejects_unknown_optimizer(tmp_path):
         _make_trainer(config)
 
 
+def test_trainer_preflights_all_cached_latents_before_training(tmp_path):
+    paths = create_mock_dataset(tmp_path / "data", count=2, size=(32, 32), seed=5)
+    latent_root = tmp_path / "latents"
+    latent_root.mkdir()
+    config = load_config("configs/smoke/wan_decoder.yaml")
+    config["data"].update(
+        {
+            "lq_root": str(paths.lq_root),
+            "gt_root": str(paths.gt_root),
+            "lq_size": [32, 32],
+            "gt_size": [32, 32],
+        }
+    )
+    config["run"]["output_dir"] = str(tmp_path / "run")
+    config["latent_provider"] = {"type": "cached", "root": str(latent_root)}
+    torch.save({"latent_spec": config["latent_spec"]}, latent_root / "manifest.pt")
+
+    with pytest.raises(ContractError, match="cached latent sample set mismatch.*missing"):
+        _make_trainer(config)
+
+
 def test_trainer_keeps_only_latest_configured_checkpoints(tmp_path):
     config = _training_config(tmp_path, max_steps=3)
     config["trainer"]["keep_last_checkpoints"] = 2
@@ -173,6 +195,48 @@ def test_resume_rejects_changed_optimizer(tmp_path):
 
     with pytest.raises(ValueError, match="incompatible training contract.*optimizer"):
         _make_trainer(incompatible).fit(resume=checkpoint)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "field"),
+    (
+        (("trainer", "batch_size"), 1, "batch_size"),
+        (("trainer", "gradient_accumulation"), 2, "gradient_accumulation"),
+        (("run", "seed"), 99, "seed"),
+        (("data", "lq_root"), "__alternate_existing_lq__", "lq_root"),
+        (("recipe", "weights"), {"latent": 2.0}, "weights"),
+    ),
+)
+def test_resume_rejects_changed_reproducibility_contract(tmp_path, path, value, field):
+    config = _training_config(tmp_path, max_steps=1)
+    checkpoint = _make_trainer(config).fit().latest_checkpoint
+    incompatible = deepcopy(config)
+    incompatible["trainer"]["max_steps"] = 2
+    if value == "__alternate_existing_lq__":
+        alternate = create_mock_dataset(tmp_path / "alternate", count=4, size=(32, 32), seed=6)
+        value = str(alternate.lq_root)
+    incompatible[path[0]][path[1]] = value
+
+    with pytest.raises(ValueError, match=rf"incompatible training contract.*{field}"):
+        _make_trainer(incompatible).fit(resume=checkpoint)
+
+
+def test_resume_allows_explicit_semantic_contract_override_but_never_shape_override(tmp_path):
+    config = _training_config(tmp_path, max_steps=1)
+    checkpoint = _make_trainer(config).fit().latest_checkpoint
+    semantic_override = deepcopy(config)
+    semantic_override["trainer"]["max_steps"] = 2
+    semantic_override["trainer"]["allow_contract_override"] = True
+    semantic_override["latent_spec"]["family"] = "intentionally_changed_family"
+    semantic_override["color"]["matrix"] = "bt601"
+
+    resumed = _make_trainer(semantic_override).fit(resume=checkpoint)
+
+    assert resumed.start_step == 1
+    shape_override = deepcopy(semantic_override)
+    shape_override["latent_spec"]["channels"] = 8
+    with pytest.raises(ValueError, match="latent shape contract"):
+        _make_trainer(shape_override).fit(resume=checkpoint)
 
 
 def test_resume_rejects_changed_optimizer_parameter_order(tmp_path):

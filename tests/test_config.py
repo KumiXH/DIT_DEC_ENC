@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from distill_codec.config import apply_overrides, build_components, load_config
+from distill_codec.config import apply_overrides, build_components, load_config, preflight_config
 from distill_codec.contracts import ContractError
 from distill_codec.recipes import build_recipe
 
@@ -29,6 +29,7 @@ def test_smoke_configs_construct_recipe_components(filename):
         components,
         config["recipe"].get("weights"),
         source=config["recipe"].get("source", "gt"),
+        compatibility_every=config["recipe"].get("compatibility_every", 1),
     )
 
     assert recipe.name == config["recipe"]["name"]
@@ -40,6 +41,45 @@ def test_flashvsr_lq_proj_repeats_five_frames_for_causal_warmup():
     components = build_components(config)
 
     assert components["teacher_condition_encoder"].temporal_frames == 5
+
+
+def test_recipe_compatibility_interval_is_loaded_from_config():
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    config["recipe"]["compatibility_every"] = 4
+
+    components = build_components(config)
+    recipe = build_recipe(
+        config["recipe"]["name"],
+        components,
+        config["recipe"].get("weights"),
+        source=config["recipe"].get("source", "gt"),
+        compatibility_every=config["recipe"].get("compatibility_every", 1),
+    )
+
+    assert recipe.compatibility_every == 4
+
+
+def test_component_builder_requires_explicit_color_contract():
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    del config["color"]
+
+    with pytest.raises(ContractError, match="config requires color"):
+        build_components(config)
+
+
+def test_teacher_components_are_frozen_even_if_config_omits_freeze():
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    config["components"]["teacher_encoder"].pop("freeze")
+    config["components"]["teacher_decoder"].pop("freeze")
+
+    components = build_components(config)
+    recipe = build_recipe("wan_encoder_distill", components)
+    recipe.train()
+
+    for name in ("teacher_encoder", "teacher_decoder"):
+        component = recipe.components[name]
+        assert not component.training
+        assert all(not parameter.requires_grad for parameter in component.parameters())
 
 
 def test_load_config_resolves_declared_paths_relative_to_yaml(tmp_path):
@@ -68,6 +108,33 @@ def test_dotted_overrides_parse_yaml_scalars_and_lists():
 
     assert updated["trainer"]["max_steps"] == 7
     assert updated["data"]["gt_size"] == [256, 256]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "field"),
+    (
+        (lambda config: config.pop("recipe"), "recipe.name"),
+        (lambda config: config["data"].pop("gt_root"), "data.gt_root"),
+        (
+            lambda config: config["components"].pop("student_encoder"),
+            "components.student_encoder",
+        ),
+    ),
+)
+def test_config_preflight_reports_missing_field_with_config_path(mutation, field):
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    mutation(config)
+
+    with pytest.raises(ContractError, match=rf"{field}.*wan_encoder.yaml"):
+        preflight_config(config)
+
+
+def test_config_preflight_rejects_unknown_recipe_before_component_construction():
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    config["recipe"]["name"] = "unknown_recipe"
+
+    with pytest.raises(ContractError, match="recipe.name.*unknown_recipe.*available"):
+        preflight_config(config)
 
 
 def test_config_includes_merge_layers_and_main_file_wins(tmp_path):

@@ -7,11 +7,14 @@ from typing import Any, Mapping
 import torch
 from torch import nn
 
-from .contracts import ColorSpec, LatentSpec
+from .contracts import ColorSpec, ConditionSpec, LatentSpec
 
 
 def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     trainer = config.get("trainer", {})
+    run = config.get("run", {})
+    data = config.get("data", {})
+    recipe = config.get("recipe", {})
     scheduler = str(trainer.get("scheduler", "none"))
     return {
         "optimizer": str(trainer.get("optimizer", "adamw")),
@@ -23,7 +26,39 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
             if scheduler == "cosine"
             else None
         ),
+        "batch_size": int(trainer.get("batch_size", 1)),
+        "gradient_accumulation": int(trainer.get("gradient_accumulation", 1)),
+        "clip_grad_norm": float(trainer.get("clip_grad_norm", 0.0)),
+        "amp": bool(trainer.get("amp", True)),
+        "seed": int(run.get("seed", 0)),
+        "lq_root": str(data.get("lq_root", "")),
+        "gt_root": str(data.get("gt_root", "")),
+        "lq_size": list(data["lq_size"]) if data.get("lq_size") is not None else None,
+        "gt_size": list(data["gt_size"]) if data.get("gt_size") is not None else None,
+        "recipe_source": str(recipe.get("source", "gt")),
+        "recipe_weights": dict(recipe.get("weights", {})),
+        "compatibility_every": int(recipe.get("compatibility_every", 1)),
     }
+
+
+def _latent_shape_contract(spec: LatentSpec) -> dict[str, Any]:
+    return {
+        "channels": spec.channels,
+        "layout": spec.layout,
+        "spatial_downsample": spec.spatial_downsample,
+        "temporal_downsample": spec.temporal_downsample,
+    }
+
+
+def _condition_shape_contract(spec: ConditionSpec) -> dict[str, Any]:
+    contract = {
+        "layout": spec.layout,
+        "feature_dim": spec.feature_dim,
+    }
+    for name in ("spatial_downsample", "temporal_downsample"):
+        if hasattr(spec, name):
+            contract[name] = getattr(spec, name)
+    return contract
 
 
 def capture_rng_state() -> dict[str, Any]:
@@ -146,22 +181,47 @@ def load_checkpoint(
             if expected_training[name] != saved_training.get(name)
         ]
         raise ValueError("incompatible training contract: " + "; ".join(mismatches))
+    allow_contract_override = bool(config.get("trainer", {}).get("allow_contract_override", False))
     expected_latent = LatentSpec.from_dict(config["latent_spec"])
     saved_latent = LatentSpec.from_dict(payload["contracts"]["latent_spec"])
-    expected_latent.assert_compatible(saved_latent)
+    if allow_contract_override:
+        expected_shape = _latent_shape_contract(expected_latent)
+        saved_shape = _latent_shape_contract(saved_latent)
+        if expected_shape != saved_shape:
+            raise ValueError(
+                f"incompatible latent shape contract: expected={expected_shape}, saved={saved_shape}"
+            )
+    else:
+        expected_latent.assert_compatible(saved_latent)
     expected_color = ColorSpec.from_dict(config.get("color", {}))
     saved_color = ColorSpec.from_dict(payload["contracts"].get("color_spec", {}))
-    if expected_color != saved_color:
+    if not allow_contract_override and expected_color != saved_color:
         raise ValueError(f"incompatible color contract: expected={expected_color}, saved={saved_color}")
     expected_conditions = {
         name: values["adapter"]["condition_spec"]
         for name, values in config.get("components", {}).items()
         if values.get("adapter", {}).get("condition_spec")
     }
-    if expected_conditions != payload["contracts"].get("condition_specs", {}):
+    saved_conditions = payload["contracts"].get("condition_specs", {})
+    if allow_contract_override:
+        if set(expected_conditions) != set(saved_conditions):
+            raise ValueError(
+                f"incompatible condition shape contracts: expected components={sorted(expected_conditions)}, "
+                f"saved components={sorted(saved_conditions)}"
+            )
+        for name in expected_conditions:
+            expected_condition = ConditionSpec.from_dict(expected_conditions[name])
+            saved_condition = ConditionSpec.from_dict(saved_conditions[name])
+            expected_shape = _condition_shape_contract(expected_condition)
+            saved_shape = _condition_shape_contract(saved_condition)
+            if expected_shape != saved_shape:
+                raise ValueError(
+                    f"incompatible condition shape contract for {name!r}: "
+                    f"expected={expected_shape}, saved={saved_shape}"
+                )
+    elif expected_conditions != saved_conditions:
         raise ValueError(
-            f"incompatible condition contracts: expected={expected_conditions}, "
-            f"saved={payload['contracts'].get('condition_specs', {})}"
+            f"incompatible condition contracts: expected={expected_conditions}, saved={saved_conditions}"
         )
     current_trainable = trainable_component_state(components)
     if set(current_trainable) != set(payload["student_state"]):

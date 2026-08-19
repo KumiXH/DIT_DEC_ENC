@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import asdict
 from typing import Sequence
 
 import torch
 
-from .config import apply_overrides, build_components, load_config
+from .config import apply_overrides, build_components, load_config, preflight_config
 from .contracts import ContractError
 from .data import PairedImageDataset, collate_distill_batch, create_mock_dataset
+from .latents import CachedLatentProvider
 from .recipes import build_recipe
 from .trainer import Trainer
 
@@ -36,12 +38,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _load_recipe(config_path: str, overrides: list[str]):
     config = apply_overrides(load_config(config_path), overrides)
+    preflight_config(config)
     components = build_components(config)
     recipe = build_recipe(
         config["recipe"]["name"],
         components,
         config["recipe"].get("weights"),
         source=config["recipe"].get("source", "gt"),
+        compatibility_every=int(config["recipe"].get("compatibility_every", 1)),
     )
     return config, recipe
 
@@ -66,11 +70,19 @@ def _probe(config_path: str, overrides: list[str]) -> int:
         lq_size=tuple(data["lq_size"]) if data.get("lq_size") else None,
         gt_size=tuple(data["gt_size"]) if data.get("gt_size") else None,
     )
+    latent_provider = (
+        recipe.components["latent_provider"]
+        if "latent_provider" in recipe.components
+        else None
+    )
+    if isinstance(latent_provider, CachedLatentProvider):
+        latent_provider.preflight(dataset.gt_sizes_by_relative)
     batch_size = min(int(config.get("trainer", {}).get("batch_size", 1)), len(dataset))
     batch = collate_distill_batch([dataset[index] for index in range(batch_size)]).to(device)
     output = recipe(batch)
     result = {
         "recipe": recipe.name,
+        "preflight": asdict(dataset.preflight_report),
         "trainable_parameters": sum(parameter.numel() for parameter in recipe.trainable_parameters()),
         "total_loss": float(output.total_loss.detach()),
         "losses": {name: float(value.detach()) for name, value in output.losses.items()},

@@ -16,6 +16,14 @@ from .contracts import ContractError, DistillBatch
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
 
 
+@dataclass(frozen=True)
+class DatasetPreflightReport:
+    pair_count: int
+    relative_paths: tuple[str, ...]
+    lq_sizes: tuple[tuple[int, int], ...]
+    gt_sizes: tuple[tuple[int, int], ...]
+
+
 def _normalized_relative(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
@@ -69,11 +77,15 @@ class PairedImageDataset(Dataset[dict[str, object]]):
                 f"only in LQ={only_lq or '[]'}; only in GT={only_gt or '[]'}"
             )
         self._pairs = tuple((relative, lq_files[relative], gt_files[relative]) for relative in sorted(lq_files))
-        self._preflight()
+        self.preflight_report = self._preflight()
 
     @property
     def relative_paths(self) -> tuple[str, ...]:
         return tuple(pair[0] for pair in self._pairs)
+
+    @property
+    def gt_sizes_by_relative(self) -> dict[str, tuple[int, int]]:
+        return dict(self._gt_sizes_by_relative)
 
     def __len__(self) -> int:
         return len(self._pairs)
@@ -86,12 +98,25 @@ class PairedImageDataset(Dataset[dict[str, object]]):
         self._validate_size(relative, "GT", gt, self.gt_size)
         return {"lq_rgb": lq, "gt_rgb": gt, "relative_path": relative}
 
-    def _preflight(self) -> None:
+    def _preflight(self) -> DatasetPreflightReport:
+        lq_sizes: set[tuple[int, int]] = set()
+        gt_sizes: set[tuple[int, int]] = set()
+        self._gt_sizes_by_relative: dict[str, tuple[int, int]] = {}
         for relative, lq_path, gt_path in self._pairs:
             lq = _load_rgb(lq_path)
             gt = _load_rgb(gt_path)
             self._validate_size(relative, "LQ", lq, self.lq_size)
             self._validate_size(relative, "GT", gt, self.gt_size)
+            lq_sizes.add((int(lq.shape[-2]), int(lq.shape[-1])))
+            gt_size = (int(gt.shape[-2]), int(gt.shape[-1]))
+            gt_sizes.add(gt_size)
+            self._gt_sizes_by_relative[relative] = gt_size
+        return DatasetPreflightReport(
+            pair_count=len(self._pairs),
+            relative_paths=self.relative_paths,
+            lq_sizes=tuple(sorted(lq_sizes)),
+            gt_sizes=tuple(sorted(gt_sizes)),
+        )
 
     @staticmethod
     def _validate_size(

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 import torch
 from torch import Tensor, nn
 
 from .contracts import ContractError, DistillBatch, LatentSpec
+
+
+@dataclass(frozen=True)
+class CachedLatentPreflightReport:
+    sample_count: int
+    relative_paths: tuple[str, ...]
 
 
 class LatentProvider(nn.Module):
@@ -45,18 +53,75 @@ class CachedLatentProvider(LatentProvider):
         manifest = torch.load(manifest_path, map_location="cpu", weights_only=True)
         saved_spec = LatentSpec.from_dict(manifest["latent_spec"])
         latent_spec.assert_compatible(saved_spec)
+        self.preflight_report: CachedLatentPreflightReport | None = None
+
+    @staticmethod
+    def _latent_path(relative: str) -> Path:
+        return Path(relative).with_suffix(".pt")
+
+    @staticmethod
+    def _unwrap_latent(payload: object, path: Path) -> Tensor:
+        latent = payload["latent"] if isinstance(payload, dict) and "latent" in payload else payload
+        if not isinstance(latent, Tensor):
+            raise ContractError(f"cached latent {path} must contain a tensor")
+        if latent.ndim == 4 and latent.shape[0] == 1:
+            latent = latent[0]
+        if latent.ndim != 3:
+            raise ContractError(
+                f"cached latent {path} must have shape [C,H,W] or [1,C,H,W], "
+                f"got {tuple(latent.shape)}"
+            )
+        return latent
+
+    def _load_latent(self, path: Path, *, map_location: torch.device | str) -> Tensor:
+        payload = torch.load(path, map_location=map_location, weights_only=True)
+        return self._unwrap_latent(payload, path)
+
+    def preflight(
+        self,
+        image_sizes_by_relative: Mapping[str, tuple[int, int]],
+    ) -> CachedLatentPreflightReport:
+        expected = {
+            self._latent_path(relative).as_posix(): relative
+            for relative in image_sizes_by_relative
+        }
+        actual = {
+            path.relative_to(self.root).as_posix()
+            for path in self.root.rglob("*.pt")
+            if path.name != "manifest.pt"
+        }
+        missing = sorted(set(expected) - actual)
+        extra = sorted(actual - set(expected))
+        if missing or extra:
+            raise ContractError(
+                "cached latent sample set mismatch; "
+                f"missing={missing or '[]'}; extra={extra or '[]'}"
+            )
+        for latent_relative, image_relative in sorted(expected.items()):
+            latent = self._load_latent(self.root / latent_relative, map_location="cpu")
+            try:
+                self.latent_spec.validate_tensor(
+                    latent.unsqueeze(0),
+                    image_size=image_sizes_by_relative[image_relative],
+                )
+            except ContractError as error:
+                raise ContractError(
+                    f"cached latent for sample {image_relative!r} violates its contract: {error}"
+                ) from error
+        report = CachedLatentPreflightReport(
+            sample_count=len(expected),
+            relative_paths=tuple(sorted(image_sizes_by_relative)),
+        )
+        self.preflight_report = report
+        return report
 
     def forward(self, batch: DistillBatch) -> Tensor:
         latents = []
         for relative in batch.relative_path:
-            path = self.root / Path(relative).with_suffix(".pt")
+            path = self.root / self._latent_path(relative)
             if not path.is_file():
                 raise ContractError(f"cached latent does not exist for sample {relative!r}: {path}")
-            payload = torch.load(path, map_location=batch.gt_rgb.device, weights_only=True)
-            latent = payload["latent"] if isinstance(payload, dict) and "latent" in payload else payload
-            if latent.ndim == 4 and latent.shape[0] == 1:
-                latent = latent[0]
-            latents.append(latent)
+            latents.append(self._load_latent(path, map_location=batch.gt_rgb.device))
         return self._validate(torch.stack(latents), batch)
 
 

@@ -4,6 +4,7 @@ from torch import nn
 
 from distill_codec.adapters import ConditionEncoderAdapter, DecoderAdapter, EncoderAdapter, freeze_module
 from distill_codec.contracts import ColorSpec, DistillBatch, LatentSpec
+from distill_codec.color import rgb_to_yuv
 from distill_codec.models.mock import (
     MockConditionalStudentDecoder,
     MockLQProjIn,
@@ -105,12 +106,97 @@ def test_encoder_compatibility_loss_reaches_student_but_not_teacher_decoder():
     }
 
 
+def test_encoder_compatibility_loss_can_be_disabled_without_running_teacher_decoder():
+    class FailIfCalled(nn.Module):
+        def forward(self, latent):
+            raise AssertionError("teacher decoder should not run when compatibility loss is disabled")
+
+    components = _components()
+    components["teacher_decoder"] = freeze_module(FailIfCalled())
+    recipe = build_recipe("wan_encoder_distill", components, weights={"compat": 0.0})
+
+    output = recipe(_batch(), global_step=1)
+    recipe.eval()
+    validation_output = recipe(_batch(), global_step=2)
+
+    assert "compat" not in output.losses
+    assert "compat_psnr" not in output.metrics
+    assert "compat" not in validation_output.losses
+    assert "compat_psnr" not in validation_output.metrics
+
+
+def test_encoder_compatibility_loss_respects_training_interval_but_runs_for_validation():
+    components = _components()
+    recipe = build_recipe(
+        "wan_encoder_distill",
+        components,
+        weights={"compat": 1.0},
+        compatibility_every=3,
+    )
+
+    recipe.train()
+    skipped = recipe(_batch(), global_step=2)
+    computed = recipe(_batch(), global_step=3)
+    recipe.eval()
+    validated = recipe(_batch(), global_step=4)
+
+    assert "compat" not in skipped.losses
+    assert "compat" in computed.losses
+    assert "compat" in validated.losses
+    assert set(validated.images) >= {"lq", "gt", "teacher", "student"}
+
+
 def test_condition_recipe_reports_element_cosine_and_statistics_losses():
     recipe = build_recipe("flashvsr_lq_proj_distill", _components())
 
     output = recipe(_batch())
 
     assert set(output.losses) == {"condition", "condition_cos", "condition_stat"}
+
+
+@pytest.mark.parametrize(
+    "recipe_name",
+    (
+        "wan_decoder_distill",
+        "flashvsr_decoder_unconditional_student",
+        "flashvsr_decoder_conditional_student",
+    ),
+)
+def test_decoder_recipes_report_explicit_rgb_mae(recipe_name):
+    recipe = build_recipe(recipe_name, _components())
+
+    output = recipe(_batch())
+
+    assert torch.isfinite(output.metrics["rgb_mae_vs_teacher"])
+    assert torch.isfinite(output.metrics["rgb_mae_vs_gt"])
+
+
+def test_decoder_yuv_metrics_use_the_student_decoder_color_contract():
+    color_spec = ColorSpec(matrix="bt601", range="limited", chroma_upsample="bilinear")
+    components = _components()
+    components["student_decoder"] = DecoderAdapter(
+        MockStudentDecoder(),
+        output_mode="sparse_yuv",
+        color_spec=color_spec,
+    )
+    recipe = build_recipe("wan_decoder_distill", components)
+
+    output = recipe(_batch())
+    student_yuv = rgb_to_yuv(output.images["student"].detach().clamp(0, 1), color_spec)
+    gt_yuv = rgb_to_yuv(output.images["gt"], color_spec)
+
+    assert torch.allclose(
+        output.metrics["y_mae_vs_gt"],
+        torch.nn.functional.l1_loss(student_yuv[:, 0], gt_yuv[:, 0]),
+    )
+    assert torch.allclose(
+        output.metrics["u_mae_vs_gt"],
+        torch.nn.functional.l1_loss(student_yuv[:, 1], gt_yuv[:, 1]),
+    )
+    assert torch.allclose(
+        output.metrics["v_mae_vs_gt"],
+        torch.nn.functional.l1_loss(student_yuv[:, 2], gt_yuv[:, 2]),
+    )
 
 
 def test_lpips_disabled_does_not_construct_optional_dependency(monkeypatch):

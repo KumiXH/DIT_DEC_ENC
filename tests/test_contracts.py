@@ -41,6 +41,33 @@ def test_latent_spec_reports_shape_mismatch():
         spec.validate_tensor(torch.zeros(1, 8, 32, 32), image_size=(256, 256))
 
 
+def test_latent_spec_rejects_wrong_dtype_non_finite_and_out_of_range_values():
+    spec = LatentSpec(
+        "bounded",
+        16,
+        "BCHW",
+        8,
+        1,
+        "identity",
+        value_range="minus_one_one",
+        dtype="float32",
+    )
+
+    with pytest.raises(ContractError, match="expected dtype=float32"):
+        spec.validate_tensor(torch.zeros(1, 16, 4, 4, dtype=torch.float64))
+    with pytest.raises(ContractError, match="finite"):
+        spec.validate_tensor(torch.full((1, 16, 4, 4), float("nan")))
+    with pytest.raises(ContractError, match="value_range=minus_one_one"):
+        spec.validate_tensor(torch.full((1, 16, 4, 4), 1.5))
+
+
+def test_latent_spec_rejects_unknown_dtype_and_value_range_contracts():
+    with pytest.raises(ContractError, match="dtype"):
+        LatentSpec("x", 1, "BCHW", 1, 1, "x", dtype="integer")
+    with pytest.raises(ContractError, match="value_range"):
+        LatentSpec("x", 1, "BCHW", 1, 1, "x", value_range="mystery")
+
+
 def test_condition_and_color_specs_validate_enums():
     condition = ConditionSpec(
         family="flashvsr_lq_proj",

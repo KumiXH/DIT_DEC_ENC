@@ -20,6 +20,7 @@ class LatentSpec:
     temporal_downsample: int
     normalization: str
     value_range: str = "unbounded"
+    dtype: str = "floating"
 
     def __post_init__(self) -> None:
         if self.channels <= 0:
@@ -28,6 +29,16 @@ class LatentSpec:
             raise ContractError(f"layout must be BCHW or BCTHW, got {self.layout!r}")
         if self.spatial_downsample <= 0 or self.temporal_downsample <= 0:
             raise ContractError("downsample factors must be positive")
+        if self.value_range not in {"unbounded", "zero_one", "minus_one_one"}:
+            raise ContractError(
+                "value_range must be unbounded, zero_one, or minus_one_one, "
+                f"got {self.value_range!r}"
+            )
+        if self.dtype not in {"floating", "float16", "bfloat16", "float32", "float64"}:
+            raise ContractError(
+                "dtype must be floating, float16, bfloat16, float32, or float64, "
+                f"got {self.dtype!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -45,6 +56,7 @@ class LatentSpec:
             "temporal_downsample",
             "normalization",
             "value_range",
+            "dtype",
         )
         mismatches = [
             f"{name}: expected {getattr(self, name)!r}, got {getattr(actual, name)!r}"
@@ -69,6 +81,25 @@ class LatentSpec:
             raise ContractError(
                 f"expected channels={self.channels}, actual shape={tuple(tensor.shape)}"
             )
+        if self.dtype == "floating":
+            if not tensor.is_floating_point():
+                raise ContractError(
+                    f"expected dtype=floating, actual dtype={str(tensor.dtype).removeprefix('torch.')}"
+                )
+        else:
+            actual_dtype = str(tensor.dtype).removeprefix("torch.")
+            if actual_dtype != self.dtype:
+                raise ContractError(f"expected dtype={self.dtype}, actual dtype={actual_dtype}")
+        if not torch.isfinite(tensor).all():
+            raise ContractError("latent tensor must contain only finite values")
+        if self.value_range == "zero_one" and not bool(
+            ((tensor >= 0.0) & (tensor <= 1.0)).all()
+        ):
+            raise ContractError("latent tensor violates value_range=zero_one")
+        if self.value_range == "minus_one_one" and not bool(
+            ((tensor >= -1.0) & (tensor <= 1.0)).all()
+        ):
+            raise ContractError("latent tensor violates value_range=minus_one_one")
         if self.layout == "BCTHW" and temporal_size is not None:
             expected_temporal = (temporal_size + self.temporal_downsample - 1) // self.temporal_downsample
             if tensor.shape[2] != expected_temporal:

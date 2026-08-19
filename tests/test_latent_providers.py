@@ -70,6 +70,59 @@ def test_cached_provider_rejects_manifest_contract_mismatch(tmp_path):
         CachedLatentProvider(root, latent_spec=SPEC)
 
 
+def test_cached_provider_preflight_rejects_missing_and_extra_sample_files(tmp_path):
+    root = tmp_path / "latents"
+    root.mkdir()
+    torch.save({"latent_spec": SPEC.to_dict()}, root / "manifest.pt")
+    torch.save(torch.zeros(16, 4, 4), root / "extra.pt")
+    provider = CachedLatentProvider(root, latent_spec=SPEC)
+
+    with pytest.raises(ContractError, match="missing=.*scene/a.pt.*extra=.*extra.pt"):
+        provider.preflight(
+            {
+                "scene/a.png": (32, 32),
+                "b.png": (32, 32),
+            }
+        )
+
+
+def test_cached_provider_preflight_validates_every_tensor_contract(tmp_path):
+    root = tmp_path / "latents"
+    (root / "scene").mkdir(parents=True)
+    torch.save({"latent_spec": SPEC.to_dict()}, root / "manifest.pt")
+    torch.save(torch.zeros(16, 4, 4), root / "scene" / "a.pt")
+    torch.save(torch.zeros(8, 4, 4), root / "b.pt")
+    provider = CachedLatentProvider(root, latent_spec=SPEC)
+
+    with pytest.raises(ContractError, match="b.png.*expected channels=16"):
+        provider.preflight(
+            {
+                "scene/a.png": (32, 32),
+                "b.png": (32, 32),
+            }
+        )
+
+
+def test_cached_provider_preflight_exposes_report(tmp_path):
+    root = tmp_path / "latents"
+    (root / "scene").mkdir(parents=True)
+    torch.save({"latent_spec": SPEC.to_dict()}, root / "manifest.pt")
+    torch.save(torch.zeros(16, 4, 4), root / "scene" / "a.pt")
+    torch.save(torch.ones(16, 4, 4), root / "b.pt")
+    provider = CachedLatentProvider(root, latent_spec=SPEC)
+
+    report = provider.preflight(
+        {
+            "scene/a.png": (32, 32),
+            "b.png": (32, 32),
+        }
+    )
+
+    assert report.sample_count == 2
+    assert report.relative_paths == ("b.png", "scene/a.png")
+    assert provider.preflight_report == report
+
+
 def test_dataset_provider_requires_batch_latent():
     provider = DatasetLatentProvider(latent_spec=SPEC)
 

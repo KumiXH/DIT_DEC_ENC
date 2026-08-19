@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from .adapters import freeze_module
-from .contracts import ContractError, DistillBatch, LatentSpec
+from .contracts import ColorSpec, ContractError, DistillBatch, LatentSpec
 from .color import rgb_to_yuv
 from .losses import LPIPSLoss, channel_stat_loss, cosine_loss, edge_loss, latent_smooth_l1
 from .metrics import psnr, ssim
@@ -66,6 +66,15 @@ REQUIRED_COMPONENTS = {
 }
 
 
+TEACHER_COMPONENTS = {
+    "teacher_encoder",
+    "teacher_decoder",
+    "teacher_condition_encoder",
+    "tc_decoder",
+    "latent_provider",
+}
+
+
 class DistillationRecipe(nn.Module):
     def __init__(
         self,
@@ -74,6 +83,7 @@ class DistillationRecipe(nn.Module):
         weights: Mapping[str, float] | None = None,
         *,
         source: str = "gt",
+        compatibility_every: int = 1,
     ) -> None:
         super().__init__()
         if name not in RECIPE_NAMES:
@@ -85,6 +95,9 @@ class DistillationRecipe(nn.Module):
             raise ContractError(f"recipe {name!r} is missing components: {sorted(missing)}")
         self.name = name
         self.weights = {**DEFAULT_WEIGHTS, **dict(weights or {})}
+        if compatibility_every <= 0:
+            raise ContractError("compatibility_every must be positive")
+        self.compatibility_every = compatibility_every
         selected = {key: components[key] for key in sorted(REQUIRED_COMPONENTS[name])}
         if name in {
             "wan_decoder_distill",
@@ -117,17 +130,27 @@ class DistillationRecipe(nn.Module):
             )
         self.components = nn.ModuleDict(selected)
         self.source = source
+        self._freeze_teachers()
+
+    def _freeze_teachers(self) -> None:
+        for name in TEACHER_COMPONENTS & set(self.components):
+            freeze_module(self.components[name])
+
+    def train(self, mode: bool = True) -> "DistillationRecipe":
+        super().train(mode)
+        self._freeze_teachers()
+        return self
 
     def trainable_parameters(self) -> Iterable[nn.Parameter]:
         return (parameter for parameter in self.parameters() if parameter.requires_grad)
 
-    def forward(self, batch: DistillBatch) -> RecipeOutput:
+    def forward(self, batch: DistillBatch, *, global_step: int | None = None) -> RecipeOutput:
         if self.name in {"wan_encoder_distill", "flashvsr_vae_encoder_distill"}:
-            return self._encoder_distill(batch)
+            return self._encoder_distill(batch, global_step=global_step)
         if self.name == "wan_decoder_distill":
             return self._decoder_distill(batch, flashvsr=False, conditional=False)
         if self.name == "wan_autoencoder_distill":
-            return self._autoencoder_distill(batch)
+            return self._autoencoder_distill(batch, global_step=global_step)
         if self.name == "flashvsr_lq_proj_distill":
             return self._condition_distill(batch)
         if self.name == "flashvsr_decoder_unconditional_student":
@@ -140,43 +163,59 @@ class DistillationRecipe(nn.Module):
             total = total + self.weights.get(name, 1.0) * loss
         return total
 
-    def _encoder_distill(self, batch: DistillBatch) -> RecipeOutput:
+    def _should_compute_compatibility(self, global_step: int | None) -> bool:
+        if self.weights.get("compat", 0.0) <= 0:
+            return False
+        if not self.training:
+            return True
+        return global_step is None or global_step % self.compatibility_every == 0
+
+    def _encoder_distill(
+        self,
+        batch: DistillBatch,
+        *,
+        global_step: int | None,
+    ) -> RecipeOutput:
         source_rgb = batch.gt_rgb if self.source == "gt" else batch.lq_rgb
         with torch.no_grad():
             teacher_latent = self.components["teacher_encoder"](source_rgb)
-            teacher_rgb = self.components["teacher_decoder"](teacher_latent)
         student_latent = self.components["student_encoder"](source_rgb)
-        compatibility_rgb = self.components["teacher_decoder"](student_latent)
         losses = {
             "latent": latent_smooth_l1(student_latent, teacher_latent),
             "cos": cosine_loss(student_latent, teacher_latent),
             "stat": channel_stat_loss(student_latent, teacher_latent),
-            "compat": F.l1_loss(compatibility_rgb, source_rgb),
         }
         reduce_dims = (0, *range(2, student_latent.ndim))
         student_mean = student_latent.detach().mean(dim=reduce_dims)
         teacher_mean = teacher_latent.mean(dim=reduce_dims)
         student_std = student_latent.detach().std(dim=reduce_dims, unbiased=False)
         teacher_std = teacher_latent.std(dim=reduce_dims, unbiased=False)
-        return RecipeOutput(
-            total_loss=self._weighted(losses),
-            losses=losses,
-            images={
+        images: dict[str, Tensor] = {}
+        metrics = {
+            "latent_mae": F.l1_loss(student_latent.detach(), teacher_latent),
+            "latent_rmse": F.mse_loss(student_latent.detach(), teacher_latent).sqrt(),
+            "latent_cosine": 1.0 - cosine_loss(student_latent.detach(), teacher_latent),
+            "channel_mean_mae": F.l1_loss(student_mean, teacher_mean),
+            "channel_std_mae": F.l1_loss(student_std, teacher_std),
+        }
+        if self._should_compute_compatibility(global_step):
+            with torch.no_grad():
+                teacher_rgb = self.components["teacher_decoder"](teacher_latent)
+            compatibility_rgb = self.components["teacher_decoder"](student_latent)
+            losses["compat"] = F.l1_loss(compatibility_rgb, source_rgb)
+            metrics.update(
+                {
+                    "compat_psnr": psnr(compatibility_rgb.detach(), source_rgb),
+                    "compat_ssim": ssim(compatibility_rgb.detach(), source_rgb),
+                }
+            )
+            images = {
                 "lq": batch.lq_rgb,
                 "gt": batch.gt_rgb,
                 "teacher": teacher_rgb,
                 "student": compatibility_rgb,
-            },
-            metrics={
-                "latent_mae": F.l1_loss(student_latent.detach(), teacher_latent),
-                "latent_rmse": F.mse_loss(student_latent.detach(), teacher_latent).sqrt(),
-                "latent_cosine": 1.0 - cosine_loss(student_latent.detach(), teacher_latent),
-                "channel_mean_mae": F.l1_loss(student_mean, teacher_mean),
-                "channel_std_mae": F.l1_loss(student_std, teacher_std),
-                "compat_psnr": psnr(compatibility_rgb.detach(), source_rgb),
-                "compat_ssim": ssim(compatibility_rgb.detach(), source_rgb),
-            },
-        )
+            }
+        return RecipeOutput(total_loss=self._weighted(losses), losses=losses, images=images, metrics=metrics)
 
     def _decoder_distill(
         self,
@@ -210,8 +249,14 @@ class DistillationRecipe(nn.Module):
         }
         if "perceptual_loss" in self.components:
             losses["lpips"] = self.components["perceptual_loss"](student_rgb, batch.gt_rgb)
-        student_yuv = rgb_to_yuv(student_rgb.detach().clamp(0, 1))
-        gt_yuv = rgb_to_yuv(batch.gt_rgb)
+        student_component = self.components[
+            "conditional_student_decoder" if conditional else "student_decoder"
+        ]
+        color_spec = getattr(student_component, "color_spec", None)
+        if not isinstance(color_spec, ColorSpec):
+            raise ContractError("student decoder must expose its ColorSpec as color_spec")
+        student_yuv = rgb_to_yuv(student_rgb.detach().clamp(0, 1), color_spec)
+        gt_yuv = rgb_to_yuv(batch.gt_rgb, color_spec)
         return RecipeOutput(
             total_loss=self._weighted(losses),
             losses=losses,
@@ -221,6 +266,8 @@ class DistillationRecipe(nn.Module):
                 "psnr_vs_gt": psnr(student_rgb.detach(), batch.gt_rgb),
                 "ssim_vs_teacher": ssim(student_rgb.detach(), teacher_rgb),
                 "ssim_vs_gt": ssim(student_rgb.detach(), batch.gt_rgb),
+                "rgb_mae_vs_teacher": F.l1_loss(student_rgb.detach(), teacher_rgb),
+                "rgb_mae_vs_gt": F.l1_loss(student_rgb.detach(), batch.gt_rgb),
                 "y_mae_vs_gt": F.l1_loss(student_yuv[:, 0], gt_yuv[:, 0]),
                 "u_mae_vs_gt": F.l1_loss(student_yuv[:, 1], gt_yuv[:, 1]),
                 "v_mae_vs_gt": F.l1_loss(student_yuv[:, 2], gt_yuv[:, 2]),
@@ -231,22 +278,28 @@ class DistillationRecipe(nn.Module):
             },
         )
 
-    def _autoencoder_distill(self, batch: DistillBatch) -> RecipeOutput:
+    def _autoencoder_distill(
+        self,
+        batch: DistillBatch,
+        *,
+        global_step: int | None,
+    ) -> RecipeOutput:
         with torch.no_grad():
             teacher_latent = self.components["teacher_encoder"](batch.gt_rgb)
             teacher_rgb = self.components["teacher_decoder"](teacher_latent)
         student_latent = self.components["student_encoder"](batch.gt_rgb)
         student_rgb = self.components["student_decoder"](student_latent)
-        compatibility_rgb = self.components["teacher_decoder"](student_latent)
         losses = {
             "latent": latent_smooth_l1(student_latent, teacher_latent),
             "cos": cosine_loss(student_latent, teacher_latent),
             "stat": channel_stat_loss(student_latent, teacher_latent),
-            "compat": F.l1_loss(compatibility_rgb, batch.gt_rgb),
             "teacher": F.l1_loss(student_rgb, teacher_rgb),
             "gt": F.l1_loss(student_rgb, batch.gt_rgb),
             "edge": edge_loss(student_rgb, batch.gt_rgb),
         }
+        if self._should_compute_compatibility(global_step):
+            compatibility_rgb = self.components["teacher_decoder"](student_latent)
+            losses["compat"] = F.l1_loss(compatibility_rgb, batch.gt_rgb)
         if "perceptual_loss" in self.components:
             losses["lpips"] = self.components["perceptual_loss"](student_rgb, batch.gt_rgb)
         return RecipeOutput(
@@ -303,5 +356,12 @@ def build_recipe(
     weights: Mapping[str, float] | None = None,
     *,
     source: str = "gt",
+    compatibility_every: int = 1,
 ) -> DistillationRecipe:
-    return DistillationRecipe(name, components, weights, source=source)
+    return DistillationRecipe(
+        name,
+        components,
+        weights,
+        source=source,
+        compatibility_every=compatibility_every,
+    )

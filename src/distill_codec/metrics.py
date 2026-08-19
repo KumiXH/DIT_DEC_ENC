@@ -42,6 +42,15 @@ def _to_pil(tensor: Tensor) -> Image.Image:
     return Image.fromarray(array, mode="RGB")
 
 
+def _absolute_error_heatmap(student: Tensor, teacher: Tensor) -> Tensor:
+    error = (student - teacher).abs().mean(dim=0, keepdim=True).clamp(0.0, 1.0)
+    position = 4.0 * error
+    red = (1.5 - (position - 3.0).abs()).clamp(0.0, 1.0)
+    green = (1.5 - (position - 2.0).abs()).clamp(0.0, 1.0)
+    blue = (1.5 - (position - 1.0).abs()).clamp(0.0, 1.0)
+    return torch.cat((red, green, blue), dim=0)
+
+
 def save_validation_grid(path: str | Path, images: Mapping[str, Tensor]) -> None:
     required = ("lq", "gt", "teacher", "student")
     missing = [name for name in required if name not in images]
@@ -52,8 +61,8 @@ def save_validation_grid(path: str | Path, images: Mapping[str, Tensor]) -> None
         lq = torch.nn.functional.interpolate(
             lq.unsqueeze(0), size=gt.shape[-2:], mode="bilinear", align_corners=False
         ).squeeze(0)
-    error = (student - teacher).abs()
-    panels = [_to_pil(panel) for panel in (lq, gt, teacher, student, error)]
+    error_heatmap = _absolute_error_heatmap(student, teacher)
+    panels = [_to_pil(panel) for panel in (lq, gt, teacher, student, error_heatmap)]
     width, height = panels[0].size
     grid = Image.new("RGB", (width * len(panels), height))
     for index, panel in enumerate(panels):
@@ -63,4 +72,3 @@ def save_validation_grid(path: str | Path, images: Mapping[str, Tensor]) -> None
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     grid.save(path)
-
