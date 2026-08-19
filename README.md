@@ -257,6 +257,56 @@ D:/weights/student_decoder.pth  # 你的黑盒学生 Decoder（可选）
 
 官方来源：[`JunhaoZhuang/FlashVSR-v1.1`](https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1)。本次下载使用可访问的 Hugging Face 镜像，文件 SHA-256 与官方 LFS 元数据一致：
 
+PowerShell 下载命令（支持重试和断点续传）：
+
+```powershell
+$WeightDir = "D:/weights"
+$DownloadBase = "https://hf-mirror.com/JunhaoZhuang/FlashVSR-v1.1/resolve/main"
+# 可以直连 Hugging Face 时改用官方地址：
+# $DownloadBase = "https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1/resolve/main"
+
+$WeightFiles = [ordered]@{
+  "Wan2.1_VAE.pth"  = 507609880
+  "LQ_proj_in.ckpt" = 575694948
+  "TCDecoder.ckpt"   = 189018333
+}
+
+New-Item -ItemType Directory -Force $WeightDir | Out-Null
+foreach ($Entry in $WeightFiles.GetEnumerator()) {
+  $Name = $Entry.Key
+  $Target = Join-Path $WeightDir $Name
+  if ((Test-Path -LiteralPath $Target) -and
+      (Get-Item -LiteralPath $Target).Length -eq $Entry.Value) {
+    Write-Host "SKIP  $Name  文件长度已正确"
+    continue
+  }
+  curl.exe --fail --location --retry 5 --retry-delay 3 `
+    --continue-at - --output $Target "$DownloadBase/$Name"
+  if ($LASTEXITCODE -ne 0) {
+    throw "下载失败：$Name，curl exit code=$LASTEXITCODE"
+  }
+}
+```
+
+下载完成后执行 SHA-256 校验；任一文件不匹配都会停止并报错：
+
+```powershell
+$ExpectedSha256 = @{
+  "Wan2.1_VAE.pth"  = "38071ab59bd94681c686fa51d75a1968f64e470262043be31f7a094e442fd981"
+  "LQ_proj_in.ckpt" = "d6d011cdaaba6a52645086caa08fa04124e746f6ca568140a24007591142bfd2"
+  "TCDecoder.ckpt"   = "e224bdcf2f52745cbf4d393ff5374c2ba09e90285d5d19062d2bf63b915b6161"
+}
+
+foreach ($Name in $ExpectedSha256.Keys) {
+  $Path = Join-Path $WeightDir $Name
+  $Actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+  if ($Actual -ne $ExpectedSha256[$Name]) {
+    throw "SHA-256 不匹配：$Name`nexpected=$($ExpectedSha256[$Name])`nactual=$Actual"
+  }
+  Write-Host "OK  $Name  $Actual"
+}
+```
+
 | 文件 | 字节数 | MiB | SHA-256 |
 | --- | ---: | ---: | --- |
 | `Wan2.1_VAE.pth` | `507,609,880` | `484.095` | `38071ab59bd94681c686fa51d75a1968f64e470262043be31f7a094e442fd981` |
