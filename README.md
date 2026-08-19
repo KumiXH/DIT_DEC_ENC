@@ -2,6 +2,8 @@
 
 一个契约驱动的 PyTorch 编解码器蒸馏工程，面向以下场景：
 
+主要训练 FlashVSR `LQ_proj_in` 和条件 `TCDecoder` 时，请直接阅读 [FlashVSR 蒸馏教程](FLASHVSR_DISTILL_TUTORIAL.md)。教程从进入 Linux 项目目录开始，逐条给出命令、预期输出、YAML 参数、checkpoint、日志和恢复训练方法。
+
 - 学生编码器输入 `[B,6,H/2,W/2]` 的 `Y00,Y01,Y10,Y11,U,V` 打包数据，输出 `[B,16,H/8,W/8]` latent；
 - 学生解码器输入 latent，输出 U/V 仅在每个 `2x2` 左上角有效的 sparse YUV；
 - 使用 Wan VAE 或 FlashVSR 组件作为教师；
@@ -122,27 +124,33 @@ $HOME/dit_codec/LQ/scene_01/000001.png
 $HOME/dit_codec/GT/scene_01/000001.png
 ```
 
-先做数据预检，不加载教师权重也可以发现配对、解码和尺寸问题：
+先用现有 Mock 配置做数据预检和一次前向。Mock 配置的 `probe` 不需要真实教师权重，可以提前发现配对、解码和尺寸问题：
 
 ```bash
 python -m distill_codec.cli probe \
-  --config configs/local/wan_encoder.yaml \
+  --config configs/smoke/wan_encoder.yaml \
   --set "data.lq_root=$HOME/dit_codec/LQ" \
   --set "data.gt_root=$HOME/dit_codec/GT" \
   --set "data.lq_size=[256,256]" \
-  --set "data.gt_size=[256,256]"
+  --set "data.gt_size=[256,256]" \
+  --set "trainer.device=cpu"
 ```
+
+真实配置的 `probe` 会先构造教师和学生组件，再读取数据并执行一次前向。因此它需要有效的教师源码、checkpoint 和配置指定的 CUDA 设备；它不是一个绕过模型加载的纯数据扫描命令。
 
 ### 4. 配置真实教师和黑盒学生
 
-建议复制已有模板到不提交的本地配置目录：
+先创建用于存放本机配置的目录：
 
 ```bash
 mkdir -p configs/local
-cp configs/smoke/wan_encoder.yaml configs/local/wan_encoder.yaml
 ```
 
-然后把 `configs/local/wan_encoder.yaml` 的 `components` 替换为 include 组合。Wan VAE 编码器蒸馏的最小结构如下：
+下面的 YAML 分别写入对应的 `configs/local/*.yaml`。`configs/local/` 不会被现有 Git 规则自动忽略；如果配置中含私有路径或包名，请不要提交这些本地文件。
+
+#### `configs/local/wan_encoder.yaml`
+
+Wan VAE 编码器蒸馏的完整主配置如下：
 
 ```yaml
 includes:
@@ -192,6 +200,132 @@ run:
 
 `configs/teachers/wan_snapshot.yaml` 和 `configs/students/private_blackbox.yaml` 中的本地路径、factory 和 checkpoint 必须改成你的实际路径。真实黑盒 Encoder 的 factory 需要返回 `nn.Module`，并满足 `[B,6,H/2,W/2] -> [B,16,H/8,W/8]`；真实黑盒 Decoder 需要满足 latent -> sparse YUV `[B,3,H,W]`。
 
+#### `configs/local/flashvsr_lq_proj.yaml`
+
+这份配置蒸馏 FlashVSR `LQ_proj_in`。`student_condition_encoder` 必须直接声明，因为 [configs/students/private_blackbox.yaml](configs/students/private_blackbox.yaml) 只提供主 Encoder、Decoder 和条件 Decoder：
+
+```yaml
+includes:
+  - ../teachers/flashvsr_snapshot.yaml
+
+latent_spec:
+  family: wan_vae_v2
+  channels: 16
+  layout: BCHW
+  spatial_downsample: 8
+  temporal_downsample: 1
+  normalization: wan_vae
+
+color:
+  matrix: bt709
+  range: full
+  packed_order: Y00Y01Y10Y11UV
+  chroma_location: top_left
+  chroma_upsample: nearest
+
+recipe:
+  name: flashvsr_lq_proj_distill
+  weights: {condition: 1.0}
+
+components:
+  student_condition_encoder:
+    backend: external
+    factory: my_encrypted_package.models:create_condition_encoder
+    kwargs: {}
+    adapter:
+      kind: condition_encoder
+      temporal_frames: 5
+      condition_spec:
+        family: flashvsr_lq_proj_v1_1
+        layout: BNC
+        feature_dim: 1536
+        source: lq
+        consumer: dit
+        spatial_downsample: 16
+        temporal_downsample: 5
+
+data:
+  lq_root: ~/dit_codec/LQ
+  gt_root: ~/dit_codec/GT
+  lq_size: [256, 256]
+  gt_size: [256, 256]
+
+trainer:
+  device: cuda
+  batch_size: 2
+  learning_rate: 0.0001
+  max_steps: 100000
+  validate_every: 1000
+  checkpoint_every: 1000
+  tensorboard: true
+  amp: true
+
+run:
+  output_dir: ~/dit_codec/runs/flashvsr_lq_proj
+  seed: 7
+```
+
+#### `configs/local/flashvsr_tcdecoder.yaml`
+
+这份配置蒸馏可直接替换 FlashVSR `TCDecoder` 的条件学生。Wan Encoder 只作为冻结的 latent provider，不训练 DiT：
+
+```yaml
+includes:
+  - ../teachers/wan_snapshot.yaml
+  - ../teachers/flashvsr_snapshot.yaml
+  - ../students/private_blackbox.yaml
+
+latent_spec:
+  family: wan_vae_v2
+  channels: 16
+  layout: BCHW
+  spatial_downsample: 8
+  temporal_downsample: 1
+  normalization: wan_vae
+
+color:
+  matrix: bt709
+  range: full
+  packed_order: Y00Y01Y10Y11UV
+  chroma_location: top_left
+  chroma_upsample: nearest
+
+recipe:
+  name: flashvsr_decoder_conditional_student
+  weights: {teacher: 1.0, gt: 0.5, edge: 0.1}
+
+components:
+  conditional_student_decoder:
+    factory: my_encrypted_package.models:create_conditional_decoder
+    checkpoint: null
+
+latent_provider:
+  type: teacher_encoder
+  source: gt
+
+data:
+  lq_root: ~/dit_codec/LQ
+  gt_root: ~/dit_codec/GT
+  lq_size: [256, 256]
+  gt_size: [256, 256]
+
+trainer:
+  device: cuda
+  batch_size: 1
+  learning_rate: 0.0001
+  max_steps: 100000
+  validate_every: 1000
+  checkpoint_every: 1000
+  tensorboard: true
+  amp: true
+
+run:
+  output_dir: ~/dit_codec/runs/flashvsr_tcdecoder
+  seed: 7
+```
+
+这里把 `conditional_student_decoder.checkpoint` 覆盖为 `null`，表示从 factory 返回的初始状态开始训练。如果你有学生预训练权重，把它改成实际 `.pth` 路径。两个 snapshot 教师配置中的源码和权重路径也必须与本机一致。
+
 ### 5. 按目标选择 recipe
 
 | 目标 | recipe | 需要的教师组件 | 学生组件 |
@@ -215,27 +349,6 @@ TCDecoder  -> conditional_student_decoder
 
 这两个 Recipe 可以分开训练，不需要训练或运行 DiT。`flashvsr_decoder_unconditional_student` 只蒸馏教师输出，学生没有 LQ 条件输入，因此不是可直接替换 TCDecoder 的等价接口。Wan VAE Recipe 仍用于主 latent 编解码器实验，但不属于 FlashVSR 的 `LQ_proj_in` 条件分支。
 
-FlashVSR 条件学生需要额外配置一个 `student_condition_encoder`，例如：
-
-```yaml
-student_condition_encoder:
-  backend: external
-  factory: my_encrypted_package.models:create_condition_encoder
-  checkpoint: ~/dit_codec/weights/student_condition_encoder.pth
-  kwargs: {}
-  adapter:
-    kind: condition_encoder
-    temporal_frames: 5
-    condition_spec:
-      family: flashvsr_lq_proj_v1_1
-      layout: BNC
-      feature_dim: 1536
-      source: lq
-      consumer: dit
-      spatial_downsample: 16
-      temporal_downsample: 5
-```
-
 ### 6. 启动训练和恢复
 
 以真实 Wan Encoder 为例：
@@ -255,6 +368,26 @@ python -m distill_codec.cli train \
   --config configs/local/wan_encoder.yaml \
   --resume "$HOME/dit_codec/runs/wan_encoder/checkpoints/step_00001000.pt" \
   --set "trainer.max_steps=100000"
+```
+
+真实 FlashVSR `LQ_proj_in` 先检查配置和一次前向，再启动训练：
+
+```bash
+python -m distill_codec.cli probe \
+  --config configs/local/flashvsr_lq_proj.yaml
+
+python -m distill_codec.cli train \
+  --config configs/local/flashvsr_lq_proj.yaml
+```
+
+真实 FlashVSR 条件 `TCDecoder` 使用另一份主配置：
+
+```bash
+python -m distill_codec.cli probe \
+  --config configs/local/flashvsr_tcdecoder.yaml
+
+python -m distill_codec.cli train \
+  --config configs/local/flashvsr_tcdecoder.yaml
 ```
 
 恢复时不要随意修改 batch size、梯度累积、seed、数据尺寸、latent/condition shape、optimizer 或 scheduler 周期。确实要修改非 shape 契约时，显式设置 `trainer.allow_contract_override: true`，不要用它绕过通道数、layout 或空间/时间下采样检查。
@@ -360,7 +493,7 @@ data:
 ```
 
 启动时会检查缺失文件、不可解码图像和配置尺寸。框架不在线合成退化 LQ。
-`distill-codec probe` 的 JSON 输出包含 `preflight`，可在加载真实教师权重前核对配对数量、相对路径和实际 LQ/GT 尺寸集合。
+`distill-codec probe` 的 JSON 输出包含 `preflight`、loss 和输出 shape。使用真实配置时，CLI 会先加载所需组件和权重，然后创建数据集并报告配对数量、相对路径和实际 LQ/GT 尺寸集合；只想提前检查数据时，请使用上面的 Mock 配置命令。
 FlashVSR Recipe 如果读取到原生低分辨率 LQ，会按官方推理语义用 bicubic 对齐到 GT 目标尺寸，再送入 `LQ_proj_in` 或 TCDecoder；这不是随机退化生成。
 
 ## 分层配置
@@ -369,8 +502,7 @@ FlashVSR Recipe 如果读取到原生低分辨率 LQ，会按官方推理语义�
 
 ```yaml
 includes:
-  - ../data/paired_256.yaml
-  - ../teachers/wan_external.yaml
+  - ../teachers/wan_snapshot.yaml
   - ../students/private_blackbox.yaml
 
 recipe:
@@ -533,8 +665,9 @@ tensorboard/                  # tensorboard: true 时
 恢复：
 
 ```bash
-distill-codec train --config config.yaml \
-  --resume "$HOME/dit_codec/runs/example/checkpoints/step_00001000.pt"
+distill-codec train \
+  --config configs/local/wan_encoder.yaml \
+  --resume "$HOME/dit_codec/runs/wan_encoder/checkpoints/step_00001000.pt"
 ```
 
 Checkpoint 保存学生、optimizer、optimizer 参数名顺序、scheduler、AMP scaler、RNG、完整配置和 latent/color/condition 契约，不复制教师权重。当前版本可以稳定恢复同时训练编码器和解码器的多学生 recipe；旧版 checkpoint 若包含多个可训练组件但没有参数顺序信息，会明确拒绝恢复，避免静默错配 Adam 状态。
