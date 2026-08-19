@@ -3,19 +3,18 @@ components:
   student_encoder:
     backend: external
     factory: my_encrypted_package.models:create_encoder
-    checkpoint: D:/weights/student_encoder.pth
+    checkpoint: /data/dit_codec/weights/student_encoder.pth
     kwargs: {}
     adapter: {kind: encoder, input_mode: packed_6ch}
   student_decoder:
     backend: external
     factory: my_encrypted_package.models:create_decoder
-    checkpoint: D:/weights/student_decoder.pth
+    checkpoint: /data/dit_codec/weights/student_decoder.pth
     kwargs: {}
     adapter: {kind: decoder, output_mode: sparse_yuv}
   conditional_student_decoder:
     backend: external
     factory: my_encrypted_package.models:create_conditional_decoder
-    checkpoint: D:/weights/student_decoder.pth
+    checkpoint: /data/dit_codec/weights/student_decoder.pth
     kwargs: {}
     adapter: {kind: decoder, output_mode: sparse_yuv, accepts_condition: true}
-

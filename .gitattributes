@@ -1,3 +1,4 @@
 # Preserve vendored source bytes so manifest SHA256 values remain stable on Windows.
+*.sh text eol=lf
 third_party/** -text whitespace=-trailing-space,-blank-at-eof
 src/distill_codec/vendor/** -text whitespace=-trailing-space,-blank-at-eof

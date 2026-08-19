@@ -33,6 +33,14 @@ foreach ($configName in $configs) {
     $configPath = Join-Path $projectRoot "configs/smoke/$configName"
     $runName = [IO.Path]::GetFileNameWithoutExtension($configName)
     $runPath = Join-Path $runsPath $runName
+    Invoke-CheckedPython -m distill_codec.cli probe `
+        --config $configPath `
+        --set "data.lq_root=$($dataPath)/lq" `
+        --set "data.gt_root=$($dataPath)/gt" `
+        --set "data.lq_size=[32,32]" `
+        --set "data.gt_size=[32,32]" `
+        --set "run.output_dir=$runPath"
+
     Invoke-CheckedPython -m distill_codec.cli train `
         --config $configPath `
         --set "data.lq_root=$($dataPath)/lq" `

@@ -43,6 +43,22 @@ def test_flashvsr_lq_proj_repeats_five_frames_for_causal_warmup():
     assert components["teacher_condition_encoder"].temporal_frames == 5
 
 
+def test_flashvsr_replacement_recipes_target_lq_proj_and_tc_decoder():
+    lq_config = load_config("configs/smoke/flashvsr_lq_proj.yaml")
+    decoder_config = load_config("configs/smoke/flashvsr_decoder_conditional.yaml")
+
+    assert lq_config["recipe"]["name"] == "flashvsr_lq_proj_distill"
+    assert set(lq_config["components"]) >= {
+        "teacher_condition_encoder",
+        "student_condition_encoder",
+    }
+    assert decoder_config["recipe"]["name"] == "flashvsr_decoder_conditional_student"
+    assert set(decoder_config["components"]) >= {
+        "tc_decoder",
+        "conditional_student_decoder",
+    }
+
+
 def test_recipe_compatibility_interval_is_loaded_from_config():
     config = load_config("configs/smoke/wan_encoder.yaml")
     config["recipe"]["compatibility_every"] = 4

@@ -12,9 +12,12 @@
 
 ## 安装
 
-需要 Python 3.10+ 和与你的 CUDA 环境匹配的 PyTorch：
+需要 Python 3.10+ 和与你的 CUDA 环境匹配的 PyTorch。Ubuntu 推荐先创建独立环境：
 
-```powershell
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -e ".[train,test]"
 ```
 
@@ -22,25 +25,31 @@ python -m pip install -e ".[train,test]"
 
 ## 最快运行
 
-```powershell
+```bash
 distill-codec make-mock-data --output work/mock_data --count 8 --size 64
 
-distill-codec probe `
-  --config configs/smoke/wan_encoder.yaml `
-  --set "data.lq_root=work/mock_data/lq" `
+distill-codec probe \
+  --config configs/smoke/wan_encoder.yaml \
+  --set "data.lq_root=work/mock_data/lq" \
   --set "data.gt_root=work/mock_data/gt"
 
-distill-codec train `
-  --config configs/smoke/wan_encoder.yaml `
-  --set "data.lq_root=work/mock_data/lq" `
-  --set "data.gt_root=work/mock_data/gt" `
+distill-codec train \
+  --config configs/smoke/wan_encoder.yaml \
+  --set "data.lq_root=work/mock_data/lq" \
+  --set "data.gt_root=work/mock_data/gt" \
   --set "run.output_dir=runs/wan_encoder"
 ```
 
-完整 CPU smoke：
+Ubuntu 完整 CPU smoke：
+
+```bash
+PYTHON_BIN="$(command -v python)" ./scripts/run_smoke.sh work/smoke
+```
+
+Windows PowerShell 可使用现有入口：
 
 ```powershell
-./scripts/run_smoke.ps1 -PythonExe "C:/path/to/python.exe"
+.\scripts\run_smoke.ps1 -PythonExe ".\.venv\Scripts\python.exe" -OutputRoot "work/smoke"
 ```
 
 Smoke 会运行七个 Recipe：
@@ -63,9 +72,11 @@ Mock smoke 验证工程链路，不代表真实蒸馏质量或默认 loss 权重
 
 在仓库根目录创建一个使用正确 PyTorch/CUDA 版本的环境，然后安装项目：
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip curl
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 python -m pip install -e ".[train,test]"
@@ -77,22 +88,18 @@ python -m pip install -e ".[train,test]"
 
 先用 mock 模型确认 Python、数据读取、loss、反向传播、验证图和 resume 都正常：
 
-```powershell
-$PythonExe = (Get-Command python).Source
-
-python -m distill_codec.cli make-mock-data `
-  --output work/mock_data `
-  --count 8 `
+```bash
+python -m distill_codec.cli make-mock-data \
+  --output work/mock_data \
+  --count 8 \
   --size 64
 
-python -m distill_codec.cli probe `
-  --config configs/smoke/wan_encoder.yaml `
-  --set "data.lq_root=work/mock_data/lq" `
+python -m distill_codec.cli probe \
+  --config configs/smoke/wan_encoder.yaml \
+  --set "data.lq_root=work/mock_data/lq" \
   --set "data.gt_root=work/mock_data/gt"
 
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_smoke.ps1 `
-  -PythonExe $PythonExe `
-  -OutputRoot work/smoke
+PYTHON_BIN="$(command -v python)" ./scripts/run_smoke.sh work/smoke
 ```
 
 每个 smoke recipe 都会先训练到 step 1，再从 step 1 checkpoint 恢复到 step 2。输出位于 `work/smoke/runs/<recipe>/`，包括 `metrics.jsonl`、`checkpoints/`、`validation/` 和可选的 `tensorboard/`。
@@ -111,18 +118,18 @@ RGB [B,3,H,W]
 目录必须一一对应，相对路径和文件名完全相同：
 
 ```text
-D:/dataset/LQ/scene_01/000001.png
-D:/dataset/GT/scene_01/000001.png
+/data/dit_codec/LQ/scene_01/000001.png
+/data/dit_codec/GT/scene_01/000001.png
 ```
 
 先做数据预检，不加载教师权重也可以发现配对、解码和尺寸问题：
 
-```powershell
-python -m distill_codec.cli probe `
-  --config configs/local/wan_encoder.yaml `
-  --set "data.lq_root=D:/dataset/LQ" `
-  --set "data.gt_root=D:/dataset/GT" `
-  --set "data.lq_size=[256,256]" `
+```bash
+python -m distill_codec.cli probe \
+  --config configs/local/wan_encoder.yaml \
+  --set "data.lq_root=/data/dit_codec/LQ" \
+  --set "data.gt_root=/data/dit_codec/GT" \
+  --set "data.lq_size=[256,256]" \
   --set "data.gt_size=[256,256]"
 ```
 
@@ -130,9 +137,9 @@ python -m distill_codec.cli probe `
 
 建议复制已有模板到不提交的本地配置目录：
 
-```powershell
-New-Item -ItemType Directory -Force configs/local | Out-Null
-Copy-Item configs/smoke/wan_encoder.yaml configs/local/wan_encoder.yaml
+```bash
+mkdir -p configs/local
+cp configs/smoke/wan_encoder.yaml configs/local/wan_encoder.yaml
 ```
 
 然后把 `configs/local/wan_encoder.yaml` 的 `components` 替换为 include 组合。Wan VAE 编码器蒸馏的最小结构如下：
@@ -163,8 +170,8 @@ recipe:
   weights: {latent: 1.0, cos: 0.1, stat: 0.1, compat: 0.1}
 
 data:
-  lq_root: D:/dataset/LQ
-  gt_root: D:/dataset/GT
+  lq_root: /data/dit_codec/LQ
+  gt_root: /data/dit_codec/GT
   lq_size: [256, 256]
   gt_size: [256, 256]
 
@@ -179,7 +186,7 @@ trainer:
   amp: true
 
 run:
-  output_dir: D:/runs/wan_encoder
+  output_dir: /data/dit_codec/runs/wan_encoder
   seed: 7
 ```
 
@@ -192,12 +199,21 @@ run:
 | Wan 主 latent 编码器 | `wan_encoder_distill` | Wan `teacher_encoder`、`teacher_decoder` | `student_encoder` |
 | Wan latent 解码器 | `wan_decoder_distill` | Wan `teacher_encoder`、`teacher_decoder` | `student_decoder` |
 | Wan 编解码器一起训练 | `wan_autoencoder_distill` | Wan `teacher_encoder`、`teacher_decoder` | `student_encoder`、`student_decoder` |
-| FlashVSR 使用的 Wan VAE 编码器 | `flashvsr_vae_encoder_distill` | Wan `teacher_encoder`、`teacher_decoder` | `student_encoder` |
-| FlashVSR `LQ_proj_in` 条件编码器 | `flashvsr_lq_proj_distill` | FlashVSR `teacher_condition_encoder` | `student_condition_encoder` |
-| FlashVSR 无条件解码器 | `flashvsr_decoder_unconditional_student` | `teacher_encoder`、`tc_decoder` | `student_decoder` |
-| FlashVSR 条件解码器 | `flashvsr_decoder_conditional_student` | `teacher_encoder`、`tc_decoder` | `conditional_student_decoder` |
+| Wan VAE 主 latent 编码器（独立 DiT 案例） | `flashvsr_vae_encoder_distill` | Wan `teacher_encoder`、`teacher_decoder` | `student_encoder` |
+| FlashVSR `LQ_proj_in` 可替换条件编码器 | `flashvsr_lq_proj_distill` | FlashVSR `teacher_condition_encoder` | `student_condition_encoder` |
+| FlashVSR 无条件输出蒸馏 | `flashvsr_decoder_unconditional_student` | `teacher_encoder`、`tc_decoder` | `student_decoder` |
+| FlashVSR `TCDecoder` 可替换条件解码器 | `flashvsr_decoder_conditional_student` | `teacher_encoder`、`tc_decoder` | `conditional_student_decoder` |
 
 `LQ_proj_in` 是 DiT 条件编码器，不是 Wan VAE 主 latent 编码器。训练它时，学生组件必须使用 `adapter.kind: condition_encoder`，并声明与教师一致的 `ConditionSpec`（FlashVSR v1.1 默认 `feature_dim: 1536`、`layout: BNC`）。
+
+如果目标是在 FlashVSR 架构中直接替换教师模块，默认蒸馏链路是：
+
+```text
+LQ_proj_in -> student_condition_encoder
+TCDecoder  -> conditional_student_decoder
+```
+
+这两个 Recipe 可以分开训练，不需要训练或运行 DiT。`flashvsr_decoder_unconditional_student` 只蒸馏教师输出，学生没有 LQ 条件输入，因此不是可直接替换 TCDecoder 的等价接口。Wan VAE Recipe 仍用于主 latent 编解码器实验，但不属于 FlashVSR 的 `LQ_proj_in` 条件分支。
 
 FlashVSR 条件学生需要额外配置一个 `student_condition_encoder`，例如：
 
@@ -205,7 +221,7 @@ FlashVSR 条件学生需要额外配置一个 `student_condition_encoder`，例�
 student_condition_encoder:
   backend: external
   factory: my_encrypted_package.models:create_condition_encoder
-  checkpoint: D:/weights/student_condition_encoder.pth
+  checkpoint: /data/dit_codec/weights/student_condition_encoder.pth
   kwargs: {}
   adapter:
     kind: condition_encoder
@@ -224,20 +240,20 @@ student_condition_encoder:
 
 以真实 Wan Encoder 为例：
 
-```powershell
-python -m distill_codec.cli train `
-  --config configs/local/wan_encoder.yaml `
-  --set "data.lq_root=D:/dataset/LQ" `
-  --set "data.gt_root=D:/dataset/GT" `
-  --set "run.output_dir=D:/runs/wan_encoder"
+```bash
+python -m distill_codec.cli train \
+  --config configs/local/wan_encoder.yaml \
+  --set "data.lq_root=/data/dit_codec/LQ" \
+  --set "data.gt_root=/data/dit_codec/GT" \
+  --set "run.output_dir=/data/dit_codec/runs/wan_encoder"
 ```
 
 中断后从 checkpoint 继续：
 
-```powershell
-python -m distill_codec.cli train `
-  --config configs/local/wan_encoder.yaml `
-  --resume D:/runs/wan_encoder/checkpoints/step_00001000.pt `
+```bash
+python -m distill_codec.cli train \
+  --config configs/local/wan_encoder.yaml \
+  --resume /data/dit_codec/runs/wan_encoder/checkpoints/step_00001000.pt \
   --set "trainer.max_steps=100000"
 ```
 
@@ -248,63 +264,42 @@ python -m distill_codec.cli train `
 仓库不包含任何真实模型权重，也不会自动把权重上传到 Git。配置模板使用以下本地路径；本次已从 FlashVSR v1.1 发布目录下载并核验前三个教师文件：
 
 ```text
-D:/weights/Wan2.1_VAE.pth       # Wan VAE Encoder + Decoder，共用一份
-D:/weights/LQ_proj_in.ckpt      # FlashVSR LQ_proj_in
-D:/weights/TCDecoder.ckpt       # FlashVSR TCDecoder
-D:/weights/student_encoder.pth  # 你的黑盒学生 Encoder（可选）
-D:/weights/student_decoder.pth  # 你的黑盒学生 Decoder（可选）
+/data/dit_codec/weights/Wan2.1_VAE.pth       # Wan VAE Encoder + Decoder，共用一份
+/data/dit_codec/weights/LQ_proj_in.ckpt      # FlashVSR LQ_proj_in
+/data/dit_codec/weights/TCDecoder.ckpt       # FlashVSR TCDecoder
+/data/dit_codec/weights/student_encoder.pth  # 你的黑盒学生 Encoder（可选）
+/data/dit_codec/weights/student_decoder.pth  # 你的黑盒学生 Decoder（可选）
 ```
 
 官方来源：[`JunhaoZhuang/FlashVSR-v1.1`](https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1)。本次下载使用可访问的 Hugging Face 镜像，文件 SHA-256 与官方 LFS 元数据一致：
 
-PowerShell 下载命令（支持重试和断点续传）：
+Ubuntu 下载命令（支持重试和断点续传）：
 
-```powershell
-$WeightDir = "D:/weights"
-$DownloadBase = "https://hf-mirror.com/JunhaoZhuang/FlashVSR-v1.1/resolve/main"
+```bash
+WEIGHT_DIR="${WEIGHT_DIR:-/data/dit_codec/weights}"
+DOWNLOAD_BASE="https://hf-mirror.com/JunhaoZhuang/FlashVSR-v1.1/resolve/main"
 # 可以直连 Hugging Face 时改用官方地址：
-# $DownloadBase = "https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1/resolve/main"
+# DOWNLOAD_BASE="https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1/resolve/main"
 
-$WeightFiles = [ordered]@{
-  "Wan2.1_VAE.pth"  = 507609880
-  "LQ_proj_in.ckpt" = 575694948
-  "TCDecoder.ckpt"   = 189018333
-}
-
-New-Item -ItemType Directory -Force $WeightDir | Out-Null
-foreach ($Entry in $WeightFiles.GetEnumerator()) {
-  $Name = $Entry.Key
-  $Target = Join-Path $WeightDir $Name
-  if ((Test-Path -LiteralPath $Target) -and
-      (Get-Item -LiteralPath $Target).Length -eq $Entry.Value) {
-    Write-Host "SKIP  $Name  文件长度已正确"
-    continue
-  }
-  curl.exe --fail --location --retry 5 --retry-delay 3 `
-    --continue-at - --output $Target "$DownloadBase/$Name"
-  if ($LASTEXITCODE -ne 0) {
-    throw "下载失败：$Name，curl exit code=$LASTEXITCODE"
-  }
-}
+mkdir -p "$WEIGHT_DIR"
+for name in Wan2.1_VAE.pth LQ_proj_in.ckpt TCDecoder.ckpt; do
+  curl --fail --location --retry 5 --retry-delay 3 \
+    --continue-at - \
+    --output "$WEIGHT_DIR/$name" \
+    "$DOWNLOAD_BASE/$name"
+done
 ```
 
 下载完成后执行 SHA-256 校验；任一文件不匹配都会停止并报错：
 
-```powershell
-$ExpectedSha256 = @{
-  "Wan2.1_VAE.pth"  = "38071ab59bd94681c686fa51d75a1968f64e470262043be31f7a094e442fd981"
-  "LQ_proj_in.ckpt" = "d6d011cdaaba6a52645086caa08fa04124e746f6ca568140a24007591142bfd2"
-  "TCDecoder.ckpt"   = "e224bdcf2f52745cbf4d393ff5374c2ba09e90285d5d19062d2bf63b915b6161"
-}
+```bash
+printf '%s\n' \
+  '38071ab59bd94681c686fa51d75a1968f64e470262043be31f7a094e442fd981  Wan2.1_VAE.pth' \
+  'd6d011cdaaba6a52645086caa08fa04124e746f6ca568140a24007591142bfd2  LQ_proj_in.ckpt' \
+  'e224bdcf2f52745cbf4d393ff5374c2ba09e90285d5d19062d2bf63b915b6161  TCDecoder.ckpt' \
+  | tee "$WEIGHT_DIR/SHA256SUMS" >/dev/null
 
-foreach ($Name in $ExpectedSha256.Keys) {
-  $Path = Join-Path $WeightDir $Name
-  $Actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
-  if ($Actual -ne $ExpectedSha256[$Name]) {
-    throw "SHA-256 不匹配：$Name`nexpected=$($ExpectedSha256[$Name])`nactual=$Actual"
-  }
-  Write-Host "OK  $Name  $Actual"
-}
+(cd "$WEIGHT_DIR" && sha256sum -c SHA256SUMS)
 ```
 
 | 文件 | 字节数 | MiB | SHA-256 |
@@ -313,12 +308,15 @@ foreach ($Name in $ExpectedSha256.Keys) {
 | `LQ_proj_in.ckpt` | `575,694,948` | `549.025` | `d6d011cdaaba6a52645086caa08fa04124e746f6ca568140a24007591142bfd2` |
 | `TCDecoder.ckpt` | `189,018,333` | `180.262` | `e224bdcf2f52745cbf4d393ff5374c2ba09e90285d5d19062d2bf63b915b6161` |
 
-三份教师权重合计 `1,272,323,161 bytes`，约 `1.272 GB / 1.185 GiB`。当前配置已经可以直接从 `D:/weights` 加载它们。把文件放好后也可以用下面的命令重新统计：
+三份教师权重合计 `1,272,323,161 bytes`，约 `1.272 GB / 1.185 GiB`。当前 Linux 配置模板默认从 `/data/dit_codec/weights` 加载它们；如果你的挂载点不同，请同步修改 YAML。把文件放好后也可以用下面的命令重新统计：
 
-```powershell
-Get-ChildItem D:/weights -File | Where-Object {
-  $_.Name -in @('Wan2.1_VAE.pth','LQ_proj_in.ckpt','TCDecoder.ckpt','student_encoder.pth','student_decoder.pth')
-} | Select-Object Name,Length,@{Name='GiB';Expression={[math]::Round($_.Length/1GB,3)}}
+```bash
+du -ch "$WEIGHT_DIR"/Wan2.1_VAE.pth \
+  "$WEIGHT_DIR"/LQ_proj_in.ckpt \
+  "$WEIGHT_DIR"/TCDecoder.ckpt
+stat -c '%n %s bytes' "$WEIGHT_DIR"/Wan2.1_VAE.pth \
+  "$WEIGHT_DIR"/LQ_proj_in.ckpt \
+  "$WEIGHT_DIR"/TCDecoder.ckpt
 ```
 
 本次 mock smoke 产生的学生 checkpoint 只用于验证工程链路，位于：
@@ -347,16 +345,16 @@ tensorboard/events.out.tfevents.*    # trainer.tensorboard=true 时
 LQ 和 GT 必须有完全相同的相对目录和文件名：
 
 ```text
-D:/dataset/LQ/scene_01/000001.png
-D:/dataset/GT/scene_01/000001.png
+/data/dit_codec/LQ/scene_01/000001.png
+/data/dit_codec/GT/scene_01/000001.png
 ```
 
 配置：
 
 ```yaml
 data:
-  lq_root: D:/dataset/LQ
-  gt_root: D:/dataset/GT
+  lq_root: /data/dit_codec/LQ
+  gt_root: /data/dit_codec/GT
   lq_size: [256, 256]
   gt_size: [256, 256]
 ```
@@ -397,7 +395,7 @@ def create_encoder(**kwargs) -> torch.nn.Module:
 student_encoder:
   backend: external
   factory: my_package.models:create_encoder
-  checkpoint: D:/weights/encoder.pth
+  checkpoint: /data/dit_codec/weights/encoder.pth
   kwargs: {}
   adapter:
     kind: encoder
@@ -418,7 +416,7 @@ def create_decoder(**kwargs) -> torch.nn.Module:
 student_decoder:
   backend: external
   factory: my_package.models:create_decoder
-  checkpoint: D:/weights/decoder.pth
+  checkpoint: /data/dit_codec/weights/decoder.pth
   kwargs: {}
   adapter:
     kind: decoder
@@ -467,14 +465,14 @@ latent_provider:
 ```yaml
 latent_provider:
   type: cached
-  root: D:/latents
+  root: /data/dit_codec/latents
 ```
 
 缓存目录：
 
 ```text
-D:/latents/manifest.pt
-D:/latents/scene_01/000001.pt
+/data/dit_codec/latents/manifest.pt
+/data/dit_codec/latents/scene_01/000001.pt
 ```
 
 `manifest.pt` 必须包含 `{"latent_spec": {...}}`。单个文件可以直接保存 `[C,H,W]` tensor，也可以保存 `{"latent": tensor}`。
@@ -514,9 +512,10 @@ TCDecoder: 16 main latent + 768 condition channels
 TCDecoder 的 768 条件通道由 LQ 的 `4x8x8` space-time-to-channel 重排产生。工程 wrapper 接收 16 通道 latent 和 LQ RGB，内部按官方布局把单帧重复为 4 帧并交给 TCDecoder。
 FlashVSR 官方预处理使用 `[-1,1]` RGB；snapshot wrapper 会从 Dataset 的 `[0,1]` 自动转换，TCDecoder 输出再保持为训练器使用的 `[0,1]`。
 
-无条件学生只接收 latent，可以蒸馏教师 RGB 输出，但不能声明为与官方 TCDecoder 接口等价。条件学生则接收 latent 和 LQ。
+无条件学生只接收 latent，可以蒸馏教师 RGB 输出，但不是可直接替换 TCDecoder 的等价接口。条件学生同时接收 latent 和 LQ，才对应官方 TCDecoder 的替换边界。
 
 `LQ_proj_in` 是 DiT condition encoder，不是主 VAE Encoder；它有独立的 `flashvsr_lq_proj_distill` Recipe。
+因此 FlashVSR 的默认可替换组合是 `LQ_proj_in -> student_condition_encoder` 和 `TCDecoder  -> conditional_student_decoder`；二者仍然分开训练。
 官方 causal projection 会用首个 4 帧块预热缓存，所以单帧数据默认重复为 5 帧，产生一个有效 condition 时间块。
 多帧教师返回视频 tensor 时，Encoder/Decoder Adapter 默认取中心帧；可以显式配置 `frame_selection: first|center|last`。`ConditionSpec` 同时记录 `spatial_downsample` 和 `temporal_downsample`，用于校验 BNC token、batch 和 feature 维度。
 
@@ -533,8 +532,9 @@ tensorboard/                  # tensorboard: true 时
 
 恢复：
 
-```powershell
-distill-codec train --config config.yaml --resume runs/example/checkpoints/step_00001000.pt
+```bash
+distill-codec train --config config.yaml \
+  --resume /data/dit_codec/runs/example/checkpoints/step_00001000.pt
 ```
 
 Checkpoint 保存学生、optimizer、optimizer 参数名顺序、scheduler、AMP scaler、RNG、完整配置和 latent/color/condition 契约，不复制教师权重。当前版本可以稳定恢复同时训练编码器和解码器的多学生 recipe；旧版 checkpoint 若包含多个可训练组件但没有参数顺序信息，会明确拒绝恢复，避免静默错配 Adam 状态。
@@ -568,7 +568,7 @@ recipe:
 
 模型组件可配置 `sha256`；设置后会在构造模型前校验 checkpoint。LPIPS 默认关闭，设置 `recipe.weights.lpips` 为非零前先安装：
 
-```powershell
+```bash
 python -m pip install -e ".[perceptual]"
 ```
 

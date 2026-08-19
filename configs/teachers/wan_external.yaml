@@ -3,8 +3,8 @@ components:
     backend: external
     factory: distill_codec.integrations.snapshots:create_wan_encoder
     kwargs:
-      source_file: D:/src/DiffSynth-Studio/diffsynth/models/wan_video_vae.py
-      checkpoint: D:/weights/Wan2.1_VAE.pth
+      source_file: /data/dit_codec/src/DiffSynth-Studio/diffsynth/models/wan_video_vae.py
+      checkpoint: /data/dit_codec/weights/Wan2.1_VAE.pth
       device: cuda
       shared_key: wan_teacher
     freeze: true
@@ -13,8 +13,8 @@ components:
     backend: external
     factory: distill_codec.integrations.snapshots:create_wan_decoder
     kwargs:
-      source_file: D:/src/DiffSynth-Studio/diffsynth/models/wan_video_vae.py
-      checkpoint: D:/weights/Wan2.1_VAE.pth
+      source_file: /data/dit_codec/src/DiffSynth-Studio/diffsynth/models/wan_video_vae.py
+      checkpoint: /data/dit_codec/weights/Wan2.1_VAE.pth
       device: cuda
       shared_key: wan_teacher
     freeze: true
