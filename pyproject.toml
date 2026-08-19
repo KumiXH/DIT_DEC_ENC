@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "distill-codec"
+version = "0.1.0"
+description = "Contract-driven codec distillation for Wan, FlashVSR, and private PyTorch models"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "einops>=0.7",
+  "torch>=2.1",
+  "Pillow>=10",
+  "PyYAML>=6",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+train = ["tensorboard>=2.14"]
+perceptual = ["lpips>=0.1.4"]
+test = ["pytest>=8", "build>=1.2"]
+
+[project.scripts]
+distill-codec = "distill_codec.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"distill_codec.vendor.wan" = ["LICENSE", "SOURCE.md", "manifest.yaml"]
+"distill_codec.vendor.flashvsr" = ["LICENSE", "SOURCE.md", "manifest.yaml"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+extend-exclude = ["src/distill_codec/vendor", "third_party"]
+
+[tool.mypy]
+exclude = ["src/distill_codec/vendor", "third_party"]
+disable_error_code = ["import-untyped"]
+
+[[tool.mypy.overrides]]
+module = "lpips"
+ignore_missing_imports = true

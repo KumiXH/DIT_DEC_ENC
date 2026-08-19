@@ -1,0 +1,328 @@
+from __future__ import annotations
+
+import json
+import random
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterator, Mapping
+
+import torch
+from torch.utils.data import DataLoader
+
+from .checkpoint import load_checkpoint, save_checkpoint
+from .config import preflight_config
+from .contracts import ContractError, DistillBatch
+from .data import PairedImageDataset, collate_distill_batch
+from .latents import CachedLatentProvider
+from .metrics import save_validation_grid
+from .recipes import DistillationRecipe, RecipeOutput
+
+
+@dataclass(frozen=True)
+class TrainResult:
+    global_step: int
+    start_step: int
+    latest_checkpoint: Path
+    output_dir: Path
+
+
+def _seed_everything(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except ImportError:
+        pass
+
+
+class JsonlLogger:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    def write(self, event: Mapping[str, Any]) -> None:
+        serializable = {
+            key: float(value.detach().cpu()) if isinstance(value, torch.Tensor) else value
+            for key, value in event.items()
+        }
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(serializable, sort_keys=True) + "\n")
+
+
+class Trainer:
+    def __init__(self, config: Mapping[str, Any], recipe: DistillationRecipe) -> None:
+        preflight_config(config)
+        if recipe.name != config["recipe"]["name"]:
+            raise ContractError(
+                f"trainer recipe={recipe.name!r} does not match config recipe.name="
+                f"{config['recipe']['name']!r}; config={config.get('_config_path', '<in-memory config>')}"
+            )
+        self.config = dict(config)
+        self.recipe = recipe
+        run_config = config.get("run", {})
+        trainer_config = config.get("trainer", {})
+        self.output_dir = Path(run_config.get("output_dir", "runs/default"))
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.seed = int(run_config.get("seed", 0))
+        _seed_everything(self.seed)
+        requested_device = trainer_config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(requested_device)
+        if self.device.type == "cuda" and not torch.cuda.is_available():
+            raise ContractError("trainer requested CUDA but torch.cuda.is_available() is false")
+        self.recipe.to(self.device)
+        parameters = list(self.recipe.trainable_parameters())
+        if not parameters:
+            raise ContractError(f"recipe {self.recipe.name!r} has no trainable parameters")
+        optimizer_name = trainer_config.get("optimizer", "adamw")
+        learning_rate = float(trainer_config.get("learning_rate", 1e-4))
+        weight_decay = float(trainer_config.get("weight_decay", 0.0))
+        self.optimizer: torch.optim.Optimizer
+        if optimizer_name == "adamw":
+            self.optimizer = torch.optim.AdamW(
+                parameters,
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            )
+        elif optimizer_name == "adam":
+            self.optimizer = torch.optim.Adam(
+                parameters,
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            )
+        else:
+            raise ContractError(f"unsupported optimizer {optimizer_name!r}")
+        scheduler_name = trainer_config.get("scheduler", "none")
+        self.scheduler = None
+        if scheduler_name == "cosine":
+            scheduler_max_steps = int(
+                trainer_config.get("scheduler_max_steps", trainer_config.get("max_steps", 1))
+            )
+            if scheduler_max_steps <= 0:
+                raise ContractError("scheduler_max_steps must be positive")
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=scheduler_max_steps,
+            )
+        elif scheduler_name != "none":
+            raise ContractError(f"unsupported scheduler {scheduler_name!r}")
+        keep_last_checkpoints = trainer_config.get("keep_last_checkpoints")
+        self.keep_last_checkpoints = (
+            None if keep_last_checkpoints is None else int(keep_last_checkpoints)
+        )
+        if self.keep_last_checkpoints is not None and self.keep_last_checkpoints <= 0:
+            raise ContractError("keep_last_checkpoints must be positive")
+        self.amp_enabled = bool(trainer_config.get("amp", True)) and self.device.type == "cuda"
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled)
+        self.logger = JsonlLogger(self.output_dir / "metrics.jsonl")
+        self.tensorboard = None
+        if trainer_config.get("tensorboard", False):
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+            except ImportError as error:
+                raise ContractError("tensorboard logging requested; install distill-codec[train]") from error
+            self.tensorboard = SummaryWriter(self.output_dir / "tensorboard")
+        if config.get("latent_provider", {}).get("type") == "dataset":
+            raise ContractError(
+                "the standard paired-image Trainer cannot use the dataset latent provider; "
+                "use type='cached' or provide a custom Dataset/Trainer that populates DistillBatch.latent"
+            )
+        self.train_loader, self.validation_loader = self._build_loaders(config)
+        latent_provider = (
+            self.recipe.components["latent_provider"]
+            if "latent_provider" in self.recipe.components
+            else None
+        )
+        if isinstance(latent_provider, CachedLatentProvider):
+            dataset = self.train_loader.dataset
+            if not isinstance(dataset, PairedImageDataset):
+                raise ContractError("cached latent preflight requires PairedImageDataset")
+            latent_provider.preflight(dataset.gt_sizes_by_relative)
+
+    @staticmethod
+    def _build_loaders(config: Mapping[str, Any]) -> tuple[DataLoader, DataLoader]:
+        data_config = config["data"]
+        dataset = PairedImageDataset(
+            data_config["lq_root"],
+            data_config["gt_root"],
+            lq_size=tuple(data_config["lq_size"]) if data_config.get("lq_size") else None,
+            gt_size=tuple(data_config["gt_size"]) if data_config.get("gt_size") else None,
+        )
+        trainer_config = config.get("trainer", {})
+        batch_size = int(trainer_config.get("batch_size", 1))
+        num_workers = int(trainer_config.get("num_workers", 0))
+        generator = torch.Generator().manual_seed(int(config.get("run", {}).get("seed", 0)))
+        train = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            generator=generator,
+            num_workers=num_workers,
+            collate_fn=collate_distill_batch,
+        )
+        validation = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=collate_distill_batch,
+        )
+        return train, validation
+
+    def _set_training_modes(self) -> None:
+        self.recipe.train()
+        for component in self.recipe.components.values():
+            if not any(parameter.requires_grad for parameter in component.parameters()):
+                component.eval()
+
+    def _prune_checkpoints(self, latest_checkpoint: Path) -> None:
+        if self.keep_last_checkpoints is None:
+            return
+        checkpoint_dir = self.output_dir / "checkpoints"
+        checkpoints = sorted(checkpoint_dir.glob("step_*.pt"))
+        latest_resolved = latest_checkpoint.resolve()
+        older_checkpoints = [path for path in checkpoints if path.resolve() != latest_resolved]
+        remove_count = max(0, len(checkpoints) - self.keep_last_checkpoints)
+        for path in older_checkpoints[:remove_count]:
+            path.unlink()
+
+    def _discard_future_checkpoints(self, global_step: int) -> None:
+        checkpoint_dir = self.output_dir / "checkpoints"
+        for path in checkpoint_dir.glob("step_*.pt"):
+            try:
+                step = int(path.stem.removeprefix("step_"))
+            except ValueError:
+                continue
+            if step > global_step:
+                path.unlink()
+
+    def _infinite_batches(self) -> Iterator[tuple[int, DistillBatch]]:
+        epoch = 0
+        while True:
+            for batch in self.train_loader:
+                yield epoch, batch
+            epoch += 1
+
+    def fit(self, *, resume: str | Path | None = None) -> TrainResult:
+        trainer_config = self.config.get("trainer", {})
+        max_steps = int(trainer_config.get("max_steps", 1))
+        accumulation = max(1, int(trainer_config.get("gradient_accumulation", 1)))
+        validate_every = max(1, int(trainer_config.get("validate_every", max_steps)))
+        checkpoint_every = max(1, int(trainer_config.get("checkpoint_every", max_steps)))
+        clip_grad = float(trainer_config.get("clip_grad_norm", 0.0))
+        global_step = 0
+        epoch = 0
+        best_metrics: dict[str, float] = {}
+        data_batches_consumed = 0
+        if resume is not None:
+            payload = load_checkpoint(
+                resume,
+                recipe_name=self.recipe.name,
+                components=self.recipe.components,
+                optimizer=self.optimizer,
+                scheduler=self.scheduler,
+                scaler=self.scaler,
+                config=self.config,
+            )
+            global_step = int(payload["global_step"])
+            epoch = int(payload["epoch"])
+            best_metrics = dict(payload.get("best_metrics", {}))
+            data_batches_consumed = int(payload.get("data_batches_consumed", global_step * accumulation))
+            self._discard_future_checkpoints(global_step)
+        start_step = global_step
+        latest_checkpoint = Path(resume) if resume is not None else self.output_dir / "checkpoints" / "initial.pt"
+        if resume is not None:
+            self._prune_checkpoints(latest_checkpoint)
+        batches = self._infinite_batches()
+        for _ in range(data_batches_consumed):
+            next(batches)
+        self.optimizer.zero_grad(set_to_none=True)
+        while global_step < max_steps:
+            self._set_training_modes()
+            accumulated_output: RecipeOutput | None = None
+            for micro_step in range(accumulation):
+                epoch, batch = next(batches)
+                batch = batch.to(self.device)
+                with torch.autocast(
+                    device_type=self.device.type,
+                    enabled=self.amp_enabled,
+                    dtype=torch.float16,
+                ):
+                    output = self.recipe(batch, global_step=global_step + 1)
+                    loss = output.total_loss / accumulation
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(
+                        f"non-finite loss at global_step={global_step}, samples={batch.relative_path}, "
+                        f"losses={{{', '.join(f'{key}: {float(value.detach())}' for key, value in output.losses.items())}}}"
+                    )
+                self.scaler.scale(loss).backward()
+                accumulated_output = output
+                data_batches_consumed += 1
+            if clip_grad > 0:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(list(self.recipe.trainable_parameters()), clip_grad)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad(set_to_none=True)
+            if self.scheduler is not None:
+                self.scheduler.step()
+            global_step += 1
+            assert accumulated_output is not None
+            self._log_output("train", global_step, accumulated_output)
+            if global_step % validate_every == 0 or global_step == max_steps:
+                metrics = self.validate(global_step)
+                best_metrics.update(metrics)
+            if global_step % checkpoint_every == 0 or global_step == max_steps:
+                latest_checkpoint = save_checkpoint(
+                    self.output_dir / "checkpoints" / f"step_{global_step:08d}.pt",
+                    recipe_name=self.recipe.name,
+                    components=self.recipe.components,
+                    optimizer=self.optimizer,
+                    scheduler=self.scheduler,
+                    scaler=self.scaler,
+                    global_step=global_step,
+                    epoch=epoch,
+                    data_batches_consumed=data_batches_consumed,
+                    config=self.config,
+                    best_metrics=best_metrics,
+                )
+                self._prune_checkpoints(latest_checkpoint)
+        if self.tensorboard is not None:
+            self.tensorboard.flush()
+            self.tensorboard.close()
+        return TrainResult(global_step, start_step, latest_checkpoint, self.output_dir)
+
+    @torch.no_grad()
+    def validate(self, global_step: int) -> dict[str, float]:
+        self.recipe.eval()
+        batch = next(iter(self.validation_loader)).to(self.device)
+        output = self.recipe(batch, global_step=global_step)
+        self._log_output("validation", global_step, output)
+        if output.images:
+            save_validation_grid(
+                self.output_dir / "validation" / f"step_{global_step:08d}.png",
+                output.images,
+            )
+            if self.tensorboard is not None:
+                for name, image in output.images.items():
+                    self.tensorboard.add_image(
+                        f"validation/{name}", image[0].detach().clamp(0, 1).cpu(), global_step
+                    )
+        return {name: float(value.detach().cpu()) for name, value in output.metrics.items()}
+
+    def _log_output(self, phase: str, global_step: int, output: RecipeOutput) -> None:
+        event: dict[str, Any] = {
+            "phase": phase,
+            "global_step": global_step,
+            "total_loss": output.total_loss,
+            **{f"loss/{name}": value for name, value in output.losses.items()},
+            **{f"metric/{name}": value for name, value in output.metrics.items()},
+        }
+        self.logger.write(event)
+        if self.tensorboard is not None:
+            for name, value in event.items():
+                if isinstance(value, torch.Tensor):
+                    self.tensorboard.add_scalar(f"{phase}/{name}", float(value.detach().cpu()), global_step)

@@ -1,0 +1,27 @@
+components:
+  teacher_condition_encoder:
+    backend: external
+    factory: distill_codec.integrations.snapshots:create_lq_proj_in
+    kwargs:
+      source_file: D:/src/FlashVSR/examples/WanVSR/utils/utils.py
+      checkpoint: D:/weights/LQ_proj_in.ckpt
+      class_name: Causal_LQ4x_Proj
+      in_dim: 3
+      out_dim: 1536
+      layer_num: 1
+    freeze: true
+    adapter:
+      kind: condition_encoder
+      temporal_frames: 5
+      condition_spec: {family: flashvsr_lq_proj_v1_1, layout: BNC, feature_dim: 1536, source: lq, consumer: dit, spatial_downsample: 16, temporal_downsample: 5}
+  tc_decoder:
+    backend: external
+    factory: distill_codec.integrations.snapshots:create_tc_decoder
+    kwargs:
+      source_file: D:/src/FlashVSR/examples/WanVSR/utils/TCDecoder.py
+      checkpoint: D:/weights/TCDecoder.ckpt
+      device: cuda
+      dtype: bfloat16
+      latent_channels: 784
+    freeze: true
+    adapter: {kind: decoder, output_mode: rgb, accepts_condition: true}

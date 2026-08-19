@@ -1,0 +1,19 @@
+project: FlashVSR
+repository: https://github.com/OpenImagingLab/FlashVSR
+revision: 6dd38e57203af4efca97df82c659f5d5a2dcf51a
+retrieved: "2026-08-18"
+license: LICENSE
+upstream_paths:
+  TCDecoder.py: examples/WanVSR/utils/TCDecoder.py
+  utils.py: examples/WanVSR/utils/utils.py
+known_limitations:
+  - The snapshot excludes the DiT, pipeline, examples, and all model weights.
+  - FlashVSR v1.1 constructs TCDecoder with 784 input channels after concatenating a 16-channel latent with 768 channels produced by 4x8x8 LQ space-time-to-channel rearrangement.
+  - A 16-channel unconditional student can match teacher RGB but is not interface-equivalent to official TCDecoder.
+files:
+  - path: TCDecoder.py
+    sha256: 33f060b36a7650455745cdd73285c6e946d3bae23de32c1dfab3098a38acfd32
+  - path: utils.py
+    sha256: dfe156fd24b35a31810cb82ee7c635952c30818bf8169871e0dca6b4df4b617d
+  - path: LICENSE
+    sha256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4

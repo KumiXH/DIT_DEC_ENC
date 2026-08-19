@@ -1,0 +1,21 @@
+components:
+  teacher_encoder:
+    backend: snapshot
+    factory: distill_codec.integrations.snapshots:create_wan_encoder
+    kwargs:
+      source_file: ../../third_party/wan/wan_video_vae.py
+      checkpoint: D:/weights/Wan2.1_VAE.pth
+      device: cuda
+      shared_key: wan_teacher
+    freeze: true
+    adapter: {kind: encoder, input_mode: rgb_video, temporal_frames: 1}
+  teacher_decoder:
+    backend: snapshot
+    factory: distill_codec.integrations.snapshots:create_wan_decoder
+    kwargs:
+      source_file: ../../third_party/wan/wan_video_vae.py
+      checkpoint: D:/weights/Wan2.1_VAE.pth
+      device: cuda
+      shared_key: wan_teacher
+    freeze: true
+    adapter: {kind: decoder, output_mode: rgb}
