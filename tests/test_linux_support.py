@@ -65,10 +65,10 @@ def test_readme_documents_complete_ubuntu_workflow():
     for marker in (
         "source .venv/bin/activate",
         "./scripts/run_smoke.sh",
-        "/data/dit_codec/LQ",
-        "/data/dit_codec/GT",
-        "/data/dit_codec/weights",
-        "--resume /data/dit_codec/runs/",
+        "$HOME/dit_codec/LQ",
+        "$HOME/dit_codec/GT",
+        "$HOME/dit_codec/weights",
+        '--resume "$HOME/dit_codec/runs/',
         "curl --fail --location --retry 5",
         "sha256sum -c SHA256SUMS",
     ):
@@ -87,7 +87,7 @@ def test_real_config_templates_use_posix_example_paths():
     for config_path in REAL_CONFIG_TEMPLATES:
         content = Path(config_path).read_text(encoding="utf-8")
         assert "D:/" not in content, config_path
-        assert "/data/dit_codec/" in content, config_path
+        assert "~/dit_codec/" in content, config_path
 
 
 def test_shell_scripts_are_checked_out_with_lf_endings():

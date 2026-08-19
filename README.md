@@ -118,8 +118,8 @@ RGB [B,3,H,W]
 目录必须一一对应，相对路径和文件名完全相同：
 
 ```text
-/data/dit_codec/LQ/scene_01/000001.png
-/data/dit_codec/GT/scene_01/000001.png
+$HOME/dit_codec/LQ/scene_01/000001.png
+$HOME/dit_codec/GT/scene_01/000001.png
 ```
 
 先做数据预检，不加载教师权重也可以发现配对、解码和尺寸问题：
@@ -127,8 +127,8 @@ RGB [B,3,H,W]
 ```bash
 python -m distill_codec.cli probe \
   --config configs/local/wan_encoder.yaml \
-  --set "data.lq_root=/data/dit_codec/LQ" \
-  --set "data.gt_root=/data/dit_codec/GT" \
+  --set "data.lq_root=$HOME/dit_codec/LQ" \
+  --set "data.gt_root=$HOME/dit_codec/GT" \
   --set "data.lq_size=[256,256]" \
   --set "data.gt_size=[256,256]"
 ```
@@ -170,8 +170,8 @@ recipe:
   weights: {latent: 1.0, cos: 0.1, stat: 0.1, compat: 0.1}
 
 data:
-  lq_root: /data/dit_codec/LQ
-  gt_root: /data/dit_codec/GT
+  lq_root: ~/dit_codec/LQ
+  gt_root: ~/dit_codec/GT
   lq_size: [256, 256]
   gt_size: [256, 256]
 
@@ -186,7 +186,7 @@ trainer:
   amp: true
 
 run:
-  output_dir: /data/dit_codec/runs/wan_encoder
+  output_dir: ~/dit_codec/runs/wan_encoder
   seed: 7
 ```
 
@@ -221,7 +221,7 @@ FlashVSR 条件学生需要额外配置一个 `student_condition_encoder`，例�
 student_condition_encoder:
   backend: external
   factory: my_encrypted_package.models:create_condition_encoder
-  checkpoint: /data/dit_codec/weights/student_condition_encoder.pth
+  checkpoint: ~/dit_codec/weights/student_condition_encoder.pth
   kwargs: {}
   adapter:
     kind: condition_encoder
@@ -243,9 +243,9 @@ student_condition_encoder:
 ```bash
 python -m distill_codec.cli train \
   --config configs/local/wan_encoder.yaml \
-  --set "data.lq_root=/data/dit_codec/LQ" \
-  --set "data.gt_root=/data/dit_codec/GT" \
-  --set "run.output_dir=/data/dit_codec/runs/wan_encoder"
+  --set "data.lq_root=$HOME/dit_codec/LQ" \
+  --set "data.gt_root=$HOME/dit_codec/GT" \
+  --set "run.output_dir=$HOME/dit_codec/runs/wan_encoder"
 ```
 
 中断后从 checkpoint 继续：
@@ -253,7 +253,7 @@ python -m distill_codec.cli train \
 ```bash
 python -m distill_codec.cli train \
   --config configs/local/wan_encoder.yaml \
-  --resume /data/dit_codec/runs/wan_encoder/checkpoints/step_00001000.pt \
+  --resume "$HOME/dit_codec/runs/wan_encoder/checkpoints/step_00001000.pt" \
   --set "trainer.max_steps=100000"
 ```
 
@@ -264,11 +264,11 @@ python -m distill_codec.cli train \
 仓库不包含任何真实模型权重，也不会自动把权重上传到 Git。配置模板使用以下本地路径；本次已从 FlashVSR v1.1 发布目录下载并核验前三个教师文件：
 
 ```text
-/data/dit_codec/weights/Wan2.1_VAE.pth       # Wan VAE Encoder + Decoder，共用一份
-/data/dit_codec/weights/LQ_proj_in.ckpt      # FlashVSR LQ_proj_in
-/data/dit_codec/weights/TCDecoder.ckpt       # FlashVSR TCDecoder
-/data/dit_codec/weights/student_encoder.pth  # 你的黑盒学生 Encoder（可选）
-/data/dit_codec/weights/student_decoder.pth  # 你的黑盒学生 Decoder（可选）
+$HOME/dit_codec/weights/Wan2.1_VAE.pth       # Wan VAE Encoder + Decoder，共用一份
+$HOME/dit_codec/weights/LQ_proj_in.ckpt      # FlashVSR LQ_proj_in
+$HOME/dit_codec/weights/TCDecoder.ckpt       # FlashVSR TCDecoder
+$HOME/dit_codec/weights/student_encoder.pth  # 你的黑盒学生 Encoder（可选）
+$HOME/dit_codec/weights/student_decoder.pth  # 你的黑盒学生 Decoder（可选）
 ```
 
 官方来源：[`JunhaoZhuang/FlashVSR-v1.1`](https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1)。本次下载使用可访问的 Hugging Face 镜像，文件 SHA-256 与官方 LFS 元数据一致：
@@ -276,7 +276,7 @@ python -m distill_codec.cli train \
 Ubuntu 下载命令（支持重试和断点续传）：
 
 ```bash
-WEIGHT_DIR="${WEIGHT_DIR:-/data/dit_codec/weights}"
+WEIGHT_DIR="${WEIGHT_DIR:-$HOME/dit_codec/weights}"
 DOWNLOAD_BASE="https://hf-mirror.com/JunhaoZhuang/FlashVSR-v1.1/resolve/main"
 # 可以直连 Hugging Face 时改用官方地址：
 # DOWNLOAD_BASE="https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1/resolve/main"
@@ -308,7 +308,7 @@ printf '%s\n' \
 | `LQ_proj_in.ckpt` | `575,694,948` | `549.025` | `d6d011cdaaba6a52645086caa08fa04124e746f6ca568140a24007591142bfd2` |
 | `TCDecoder.ckpt` | `189,018,333` | `180.262` | `e224bdcf2f52745cbf4d393ff5374c2ba09e90285d5d19062d2bf63b915b6161` |
 
-三份教师权重合计 `1,272,323,161 bytes`，约 `1.272 GB / 1.185 GiB`。当前 Linux 配置模板默认从 `/data/dit_codec/weights` 加载它们；如果你的挂载点不同，请同步修改 YAML。把文件放好后也可以用下面的命令重新统计：
+三份教师权重合计 `1,272,323,161 bytes`，约 `1.272 GB / 1.185 GiB`。当前 Linux 配置模板默认从 `~/dit_codec/weights` 加载它们；如果你的挂载点不同，请同步修改 YAML。把文件放好后也可以用下面的命令重新统计：
 
 ```bash
 du -ch "$WEIGHT_DIR"/Wan2.1_VAE.pth \
@@ -345,16 +345,16 @@ tensorboard/events.out.tfevents.*    # trainer.tensorboard=true 时
 LQ 和 GT 必须有完全相同的相对目录和文件名：
 
 ```text
-/data/dit_codec/LQ/scene_01/000001.png
-/data/dit_codec/GT/scene_01/000001.png
+$HOME/dit_codec/LQ/scene_01/000001.png
+$HOME/dit_codec/GT/scene_01/000001.png
 ```
 
 配置：
 
 ```yaml
 data:
-  lq_root: /data/dit_codec/LQ
-  gt_root: /data/dit_codec/GT
+  lq_root: ~/dit_codec/LQ
+  gt_root: ~/dit_codec/GT
   lq_size: [256, 256]
   gt_size: [256, 256]
 ```
@@ -395,7 +395,7 @@ def create_encoder(**kwargs) -> torch.nn.Module:
 student_encoder:
   backend: external
   factory: my_package.models:create_encoder
-  checkpoint: /data/dit_codec/weights/encoder.pth
+  checkpoint: ~/dit_codec/weights/encoder.pth
   kwargs: {}
   adapter:
     kind: encoder
@@ -416,7 +416,7 @@ def create_decoder(**kwargs) -> torch.nn.Module:
 student_decoder:
   backend: external
   factory: my_package.models:create_decoder
-  checkpoint: /data/dit_codec/weights/decoder.pth
+  checkpoint: ~/dit_codec/weights/decoder.pth
   kwargs: {}
   adapter:
     kind: decoder
@@ -465,14 +465,14 @@ latent_provider:
 ```yaml
 latent_provider:
   type: cached
-  root: /data/dit_codec/latents
+  root: ~/dit_codec/latents
 ```
 
 缓存目录：
 
 ```text
-/data/dit_codec/latents/manifest.pt
-/data/dit_codec/latents/scene_01/000001.pt
+$HOME/dit_codec/latents/manifest.pt
+$HOME/dit_codec/latents/scene_01/000001.pt
 ```
 
 `manifest.pt` 必须包含 `{"latent_spec": {...}}`。单个文件可以直接保存 `[C,H,W]` tensor，也可以保存 `{"latent": tensor}`。
@@ -534,7 +534,7 @@ tensorboard/                  # tensorboard: true 时
 
 ```bash
 distill-codec train --config config.yaml \
-  --resume /data/dit_codec/runs/example/checkpoints/step_00001000.pt
+  --resume "$HOME/dit_codec/runs/example/checkpoints/step_00001000.pt"
 ```
 
 Checkpoint 保存学生、optimizer、optimizer 参数名顺序、scheduler、AMP scaler、RNG、完整配置和 latent/color/condition 契约，不复制教师权重。当前版本可以稳定恢复同时训练编码器和解码器的多学生 recipe；旧版 checkpoint 若包含多个可训练组件但没有参数顺序信息，会明确拒绝恢复，避免静默错配 Adam 状态。

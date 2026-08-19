@@ -3,8 +3,8 @@ components:
     backend: external
     factory: distill_codec.integrations.snapshots:create_lq_proj_in
     kwargs:
-      source_file: /data/dit_codec/src/FlashVSR/examples/WanVSR/utils/utils.py
-      checkpoint: /data/dit_codec/weights/LQ_proj_in.ckpt
+      source_file: ~/dit_codec/src/FlashVSR/examples/WanVSR/utils/utils.py
+      checkpoint: ~/dit_codec/weights/LQ_proj_in.ckpt
       class_name: Causal_LQ4x_Proj
       in_dim: 3
       out_dim: 1536
@@ -18,8 +18,8 @@ components:
     backend: external
     factory: distill_codec.integrations.snapshots:create_tc_decoder
     kwargs:
-      source_file: /data/dit_codec/src/FlashVSR/examples/WanVSR/utils/TCDecoder.py
-      checkpoint: /data/dit_codec/weights/TCDecoder.ckpt
+      source_file: ~/dit_codec/src/FlashVSR/examples/WanVSR/utils/TCDecoder.py
+      checkpoint: ~/dit_codec/weights/TCDecoder.ckpt
       device: cuda
       dtype: bfloat16
       latent_channels: 784

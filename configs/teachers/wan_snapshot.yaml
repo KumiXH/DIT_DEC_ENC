@@ -4,7 +4,7 @@ components:
     factory: distill_codec.integrations.snapshots:create_wan_encoder
     kwargs:
       source_file: ../../third_party/wan/wan_video_vae.py
-      checkpoint: /data/dit_codec/weights/Wan2.1_VAE.pth
+      checkpoint: ~/dit_codec/weights/Wan2.1_VAE.pth
       device: cuda
       shared_key: wan_teacher
     freeze: true
@@ -14,7 +14,7 @@ components:
     factory: distill_codec.integrations.snapshots:create_wan_decoder
     kwargs:
       source_file: ../../third_party/wan/wan_video_vae.py
-      checkpoint: /data/dit_codec/weights/Wan2.1_VAE.pth
+      checkpoint: ~/dit_codec/weights/Wan2.1_VAE.pth
       device: cuda
       shared_key: wan_teacher
     freeze: true
