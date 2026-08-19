@@ -11,7 +11,6 @@ known_limitations:
   - The integration factory targets the 16-channel WanVideoVAE class at this revision.
 files:
   - path: wan_video_vae.py
-    sha256: d59096e1d440c8d67af557f80aa2d622f881f4c6a349aa3a668780ba4b8892e9
+    sha256: 17ad9aa496a13626f55d8c0b2508d72a98f3195353ba39e3cc451434371315d7
   - path: LICENSE
-    sha256: 58feeee47be7ec1007e49a80890838e4302c1bc130501d7bc1eb8bcf15bd3522
-
+    sha256: d43b96112d60d83595395649e61c6bc215f568052a979320489556c6c1262eb1
