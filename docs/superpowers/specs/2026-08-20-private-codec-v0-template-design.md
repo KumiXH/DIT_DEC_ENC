@@ -39,11 +39,11 @@ integration logic. The encoder uses three stride-2 convolutions and returns BCHW
 latent with configurable channel count, defaulting to 16. Thus an RGB tensor of
 shape `[B, 3, H, W]` produces `[B, 16, H/8, W/8]` for image sizes divisible by 8.
 
-The decoder projects the latent to a feature tensor, interpolates it to the LQ RGB
-spatial size, projects the LQ RGB to features, fuses both streams, and returns
-three-channel RGB with the same spatial size as the supplied LQ image. Interpolation
-uses an explicit size from `lq_rgb`, so the example documents that the private
-implementation owns size handling.
+The decoder derives an example target size from the latent spatial dimensions and
+the configured 8x scale, projects both latent and LQ RGB to features, interpolates
+both streams to that target, and returns three-channel RGB. This supports unequal
+LQ/GT super-resolution examples while documenting that the private implementation,
+not the shared bridge or `teacher_reference`, owns size handling.
 
 `wrapped_network.py` demonstrates the user's real pattern: wrapper classes inherit
 the base networks, select different initialization defaults, and expose private
@@ -115,8 +115,8 @@ Tests first establish the desired artifact and behavior contract:
 - v0 modules exist and root-level placeholders do not;
 - default YAML imports v0 entrypoints;
 - v0 encoder returns `[B, 16, H/8, W/8]` and supports gradients;
-- v0 conditional decoder returns RGB at LQ size and supports gradients through both
-  latent and LQ inputs;
+- v0 conditional decoder returns RGB at the latent-declared 8x target size and
+  supports gradients through both latent and LQ inputs;
 - v0 entrypoints work through the real shared bridges;
 - invalid shapes fail with useful messages;
 - tutorial paths and copy instructions match the actual tree.

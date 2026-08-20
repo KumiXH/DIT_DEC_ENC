@@ -145,6 +145,36 @@ def test_conditional_flashvsr_teacher_gets_aligned_lq_while_student_gets_raw_lq(
     assert output.metadata["condition_shape"] == [2, 3, 64, 64]
 
 
+def test_private_v0_conditional_decoder_uses_latent_target_size_with_raw_lq():
+    from private_codec.factories import create_conditional_decoder
+
+    batch = DistillBatch(
+        lq_rgb=torch.rand(2, 3, 32, 32),
+        gt_rgb=torch.rand(2, 3, 64, 64),
+        relative_path=("a.png", "b.png"),
+    )
+    components = _components()
+    components["conditional_student_decoder"] = DecoderAdapter(
+        create_conditional_decoder(
+            builder="private_codec.versions.v0.entrypoints:build_decoder",
+            runner="private_codec.versions.v0.entrypoints:run_decoder",
+            teacher_reference={"role": "conditional_decoder"},
+        ),
+        output_mode="rgb",
+        accepts_condition=True,
+    )
+    recipe = build_recipe("flashvsr_decoder_conditional_student", components)
+
+    output = recipe(batch)
+    output.total_loss.backward()
+
+    assert output.images["student"].shape == batch.gt_rgb.shape
+    assert any(
+        parameter.grad is not None
+        for parameter in components["conditional_student_decoder"].parameters()
+    )
+
+
 def test_encoder_compatibility_loss_reaches_student_but_not_teacher_decoder():
     components = _components()
     recipe = build_recipe("wan_encoder_distill", components, weights={"compat": 1.0})

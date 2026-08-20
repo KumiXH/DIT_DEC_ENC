@@ -88,12 +88,12 @@ RGB [B,3,H,W]
 同一个 `base_network.py` 中，条件 Decoder 做三件事：
 
 ```text
-dit_latent -> 卷积投影 -> 上采样到 lq_rgb 高宽 ┐
-                                                ├-> 特征融合 -> RGB
-lq_rgb     -> 卷积投影 --------------------------┘
+dit_latent -> 卷积投影 -> 上采样到 latent*8 目标尺寸 ┐
+                                                    ├-> 特征融合 -> RGB
+lq_rgb     -> 卷积投影 -> 上采样到同一目标尺寸 ------┘
 ```
 
-v0 返回 `[B,3,Hlq,Wlq]` RGB。它使用 `lq_rgb.shape[-2:]` 作为实际输出尺寸，示范尺寸处理属于私有网络，而不是 Bridge。
+v0 返回 `[B,3,Hlatent*8,Wlatent*8]` RGB。比如 `32x32` LQ 与 `8x8` latent 会得到 `64x64` RGB；LQ 特征在私有网络内部上采样。这个规则只是为了让 v0 能演示真实超分辨率训练，仍然说明尺寸处理属于私有网络，而不是 Bridge。你的版本可以采用别的规则。
 
 `wrapped_network.py` 中的私有条件 Decoder 故意定义成：
 
@@ -323,7 +323,7 @@ from .base_network import BaseNetwork
 
 ## 第 11 步：把 YAML 从 v0 切到 v1
 
-建议先复制一份 student YAML，再只修改四条版本路径：
+建议先复制一份 student YAML。Encoder 和条件 Decoder 需要修改四条 builder/runner 路径：
 
 ```yaml
 kwargs:
@@ -346,6 +346,18 @@ kwargs:
     weights_path: D:/models/private_codec/v1.pth
   runner_kwargs: {}
 ```
+
+如果还使用旧的 Wan 无条件 Decoder 或 Autoencoder Recipe，还要修改它的模块路径和类名：
+
+```yaml
+student_decoder:
+  kwargs:
+    module_path: private_codec.versions.v1.wrapped_network
+    class_name: V1UnconditionalDecoder
+    init_kwargs: {}
+```
+
+如果你不重命名复制后的类，也可以继续填写实际存在的类名；关键是 `module_path` 和 `class_name` 必须共同指向新版本。
 
 以后增加 v2、v3 时，继续复制完整版本目录并把路径改为 `private_codec.versions.v2.entrypoints`、`private_codec.versions.v3.entrypoints`。不要给每个版本在公共 factory 里新增函数。
 

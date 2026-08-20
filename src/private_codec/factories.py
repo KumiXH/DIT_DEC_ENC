@@ -11,7 +11,7 @@ from .bridge import PrivateConditionalDecoderBridge, PrivateEncoderBridge
 
 def _create_model(
     *,
-    module_path: str,
+    module_path: str = "private_codec.versions.v0.wrapped_network",
     class_name: str,
     init_kwargs: Mapping[str, Any] | None = None,
 ) -> nn.Module:

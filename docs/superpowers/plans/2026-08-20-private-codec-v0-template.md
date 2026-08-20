@@ -39,7 +39,7 @@ Construct the real shared encoder bridge with v0 entrypoints, pass a `[2,3,32,40
 
 - [ ] **Step 3: Add conditional decoder behavior and gradient test**
 
-Construct the real conditional bridge with v0 entrypoints, pass latent `[2,16,4,5]` and LQ RGB `[2,3,32,40]`, assert RGB output shape `[2,3,32,40]`, backpropagate the mean, and assert gradients reach both project inputs and network parameters.
+Construct the real conditional bridge with v0 entrypoints, pass latent `[2,16,4,5]` and LQ RGB `[2,3,32,40]`, assert RGB output shape `[2,3,32,40]`, then cover unequal LQ/target dimensions through the real FlashVSR recipe. Backpropagate and assert gradients reach both project inputs and network parameters.
 
 - [ ] **Step 4: Add malformed-input tests**
 
@@ -74,7 +74,7 @@ Expected: failures because `private_codec.versions.v0` and the updated paths do 
 
 - [ ] **Step 1: Implement validated base convolution modules**
 
-Implement `ConvEncoderBase` with three `Conv2d(kernel_size=3, stride=2, padding=1)` stages and `ConvConditionalDecoderBase` with latent/LQ projections, bilinear latent interpolation to the LQ size, feature fusion, and a three-channel sigmoid output. Add clear shape checks at the private boundary.
+Implement `ConvEncoderBase` with three `Conv2d(kernel_size=3, stride=2, padding=1)` stages and `ConvConditionalDecoderBase` with latent/LQ projections, bilinear interpolation to the latent-declared 8x target size, feature fusion, and a three-channel sigmoid output. Add clear shape checks at the private boundary.
 
 - [ ] **Step 2: Implement inheritance-based wrappers**
 

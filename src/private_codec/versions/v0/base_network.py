@@ -60,7 +60,7 @@ class ConvEncoderBase(nn.Module):
 
 
 class ConvConditionalDecoderBase(nn.Module):
-    """Fuses a latent tensor with LQ RGB and returns RGB at the LQ size."""
+    """Fuses a latent tensor with LQ RGB at the latent-declared target size."""
 
     def __init__(
         self,
@@ -100,14 +100,22 @@ class ConvConditionalDecoderBase(nn.Module):
                 f"got {tuple(dit_latent.shape)} and {tuple(lq_rgb.shape)}"
             )
 
+        target_size = (dit_latent.shape[-2] * 8, dit_latent.shape[-1] * 8)
         latent_features = self.latent_projection(dit_latent)
         latent_features = F.interpolate(
             latent_features,
-            size=lq_rgb.shape[-2:],
+            size=target_size,
             mode="bilinear",
             align_corners=False,
         )
         lq_features = self.lq_projection(lq_rgb)
+        if lq_features.shape[-2:] != target_size:
+            lq_features = F.interpolate(
+                lq_features,
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
         return self.fusion(
             F.silu(torch.cat((latent_features, lq_features), dim=1))
         )

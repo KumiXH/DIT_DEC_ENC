@@ -90,7 +90,6 @@ def test_private_codec_v0_legacy_decoder_is_a_runnable_rgb_example():
     from private_codec.factories import create_decoder
 
     decoder = create_decoder(
-        module_path="private_codec.versions.v0.wrapped_network",
         class_name="V0UnconditionalDecoder",
         init_kwargs={},
     )
@@ -265,6 +264,8 @@ def test_private_codec_tutorial_names_every_fill_in_file_and_probe_command():
         "Copy-Item -Recurse src/private_codec/versions/v0 src/private_codec/versions/v1",
         "private_codec.versions.v0.entrypoints",
         "private_codec.versions.v1.entrypoints",
+        "module_path: private_codec.versions.v1.wrapped_network",
+        "class_name: V1UnconditionalDecoder",
         "python -m distill_codec.cli probe",
         "output_mode: rgb",
         "框架已经验证",
