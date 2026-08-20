@@ -9,11 +9,22 @@ from torch import Tensor, nn
 
 
 def _import_callable(import_path: str, *, role: str) -> Callable[..., Any]:
-    if ":" not in import_path:
+    if not isinstance(import_path, str) or import_path.count(":") != 1:
         raise ValueError(
             f"private codec {role} must use 'module:symbol' syntax, got {import_path!r}"
         )
     module_name, symbol_name = import_path.split(":", 1)
+    if (
+        not module_name
+        or not symbol_name
+        or module_name.startswith(".")
+        or module_name != module_name.strip()
+        or symbol_name != symbol_name.strip()
+    ):
+        raise ValueError(
+            f"private codec {role} must use 'module:symbol' syntax with a non-empty "
+            f"absolute module and symbol, got {import_path!r}"
+        )
     try:
         module = importlib.import_module(module_name)
         value = getattr(module, symbol_name)
@@ -40,6 +51,7 @@ class _PrivateBridge(nn.Module):
     ) -> None:
         super().__init__()
         constructor = _import_callable(builder, role="builder")
+        runner_callable = _import_callable(runner, role="runner")
         network = constructor(**dict(builder_kwargs or {}))
         if not isinstance(network, nn.Module):
             raise TypeError(
@@ -47,7 +59,7 @@ class _PrivateBridge(nn.Module):
                 "expected torch.nn.Module"
             )
         self.network = network
-        self._runner = _import_callable(runner, role="runner")
+        self._runner = runner_callable
         self._runner_path = runner
         self._runner_kwargs = dict(runner_kwargs or {})
         self.teacher_reference = copy.deepcopy(dict(teacher_reference))

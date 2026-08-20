@@ -440,12 +440,28 @@ def build_components(config: Mapping[str, Any]) -> dict[str, nn.Module]:
         adapter = values.get("adapter", {})
         kind = adapter.get("kind")
         if kind == "encoder":
+            raw_latent_temporal_frames = adapter.get("latent_temporal_frames")
+            if raw_latent_temporal_frames == "teacher":
+                latent_temporal_frames = _teacher_temporal_frames(config)
+            elif raw_latent_temporal_frames is None:
+                latent_temporal_frames = None
+            elif (
+                type(raw_latent_temporal_frames) is int
+                and raw_latent_temporal_frames > 0
+            ):
+                latent_temporal_frames = raw_latent_temporal_frames
+            else:
+                raise ContractError(
+                    f"component {name!r} adapter.latent_temporal_frames must be "
+                    "'teacher' or a positive integer"
+                )
             result[name] = EncoderAdapter(
                 module,
                 latent_spec=latent_spec,
                 input_mode=adapter["input_mode"],
                 color_spec=color_spec,
                 temporal_frames=adapter.get("temporal_frames", 1),
+                latent_temporal_frames=latent_temporal_frames,
                 frame_selection=adapter.get("frame_selection", "center"),
             )
         elif kind == "decoder":

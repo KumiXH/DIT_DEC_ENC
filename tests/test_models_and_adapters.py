@@ -126,6 +126,17 @@ def test_encoder_adapter_rejects_invalid_frame_selection():
         )
 
 
+@pytest.mark.parametrize("value", (0, -1, True, False, "teacher", 1.5))
+def test_encoder_adapter_rejects_invalid_latent_temporal_frames(value):
+    with pytest.raises(ContractError, match="latent_temporal_frames.*positive integer"):
+        EncoderAdapter(
+            MockWanEncoder(),
+            latent_spec=LATENT_SPEC,
+            input_mode="rgb",
+            latent_temporal_frames=value,
+        )
+
+
 def test_video_teacher_encoder_preserves_bcthw_latent_layout():
     class VideoEncoder(torch.nn.Module):
         def forward(self, video):

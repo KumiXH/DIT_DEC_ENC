@@ -79,7 +79,11 @@ def test_private_codec_student_config_exposes_rgb_bridge_contracts():
         "builder_kwargs": {},
         "runner_kwargs": {},
     }
-    assert encoder["adapter"] == {"kind": "encoder", "input_mode": "rgb"}
+    assert encoder["adapter"] == {
+        "kind": "encoder",
+        "input_mode": "rgb",
+        "latent_temporal_frames": "teacher",
+    }
 
     decoder = config["components"]["conditional_student_decoder"]
     assert decoder["factory"] == "private_codec.factories:create_conditional_decoder"
@@ -133,5 +137,15 @@ def test_private_codec_tutorial_names_every_fill_in_file_and_probe_command():
         "private_codec.versions.v2.entrypoints",
         "python -m distill_codec.cli probe",
         "output_mode: rgb",
+        "框架已经验证",
+        "真实私有网络尚未验证",
+        "C:\\Users\\xh932\\anaconda3\\Scripts\\conda.exe",
+        "$env:PYTHONPATH = (Resolve-Path 'src').Path",
+        "python -m py_compile",
+        "builder_kwargs",
+        "runner_kwargs",
+        "BCTHW",
+        "torch.cuda.is_available()",
+        "test_multi_component_resume_is_stable_across_python_hash_seeds",
     ):
         assert marker in tutorial

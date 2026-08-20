@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Mapping
 
+import torch
 from torch import Tensor, nn
 
 from distill_codec.models.mock import MockStudentEncoder
@@ -31,6 +32,10 @@ def build_private_bridge_network(offset: float = 0.0) -> nn.Module:
 
 def build_private_bridge_non_module() -> object:
     return object()
+
+
+def build_private_bridge_should_not_run() -> nn.Module:
+    raise AssertionError("builder should not run before runner validation")
 
 
 def _record_private_bridge_call(
@@ -62,6 +67,51 @@ def run_private_encoder(
     )
     teacher_reference["runner_mutated"] = True
     return (rgb + network.offset) * gain
+
+
+def run_private_video_encoder(
+    *,
+    network: PrivateBridgeNetwork,
+    rgb: Tensor,
+    teacher_reference: dict[str, Any],
+) -> Tensor:
+    _record_private_bridge_call(
+        network=network,
+        teacher_reference=teacher_reference,
+        rgb=rgb,
+    )
+    shape = teacher_reference["outputs"]["latent"]["shape"]
+    return torch.zeros(
+        rgb.shape[0],
+        shape[1],
+        shape[2],
+        shape[3],
+        shape[4],
+        dtype=rgb.dtype,
+        device=rgb.device,
+    ) + network.offset
+
+
+def run_private_two_frame_encoder(
+    *,
+    network: PrivateBridgeNetwork,
+    rgb: Tensor,
+    teacher_reference: dict[str, Any],
+) -> Tensor:
+    _record_private_bridge_call(
+        network=network,
+        teacher_reference=teacher_reference,
+        rgb=rgb,
+    )
+    return torch.zeros(
+        rgb.shape[0],
+        16,
+        2,
+        rgb.shape[-2] // 8,
+        rgb.shape[-1] // 8,
+        dtype=rgb.dtype,
+        device=rgb.device,
+    ) + network.offset
 
 
 def run_private_decoder(

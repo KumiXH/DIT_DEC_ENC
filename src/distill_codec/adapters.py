@@ -61,17 +61,23 @@ class EncoderAdapter(nn.Module):
         input_mode: str,
         color_spec: ColorSpec | None = None,
         temporal_frames: int = 1,
+        latent_temporal_frames: int | None = None,
         frame_selection: str = "center",
     ) -> None:
         super().__init__()
         if input_mode not in {"rgb", "rgb_video", "packed_6ch"}:
             raise ContractError(f"unsupported encoder input_mode {input_mode!r}")
+        if latent_temporal_frames is not None and (
+            type(latent_temporal_frames) is not int or latent_temporal_frames <= 0
+        ):
+            raise ContractError("latent_temporal_frames must be a positive integer or null")
         _validate_frame_selection(frame_selection)
         self.module = module
         self.latent_spec = latent_spec
         self.input_mode = input_mode
         self.color_spec = color_spec or ColorSpec()
         self.temporal_frames = temporal_frames
+        self.latent_temporal_frames = latent_temporal_frames
         self.frame_selection = frame_selection
 
     def forward(self, rgb: Tensor) -> Tensor:
@@ -85,7 +91,9 @@ class EncoderAdapter(nn.Module):
         if latent.ndim == 5 and self.latent_spec.layout == "BCHW":
             latent = _select_frame(latent, self.frame_selection)
         image_size = (int(rgb.shape[-2]), int(rgb.shape[-1]))
-        temporal_size = self.temporal_frames if self.input_mode == "rgb_video" else 1
+        temporal_size = self.latent_temporal_frames
+        if temporal_size is None:
+            temporal_size = self.temporal_frames if self.input_mode == "rgb_video" else 1
         self.latent_spec.validate_tensor(
             latent,
             image_size=image_size,

@@ -1,12 +1,14 @@
 from pathlib import Path
 
 import pytest
+import torch
 import yaml
 
 from distill_codec.config import apply_overrides, build_components, load_config, preflight_config
 from distill_codec.contracts import ContractError
 from distill_codec.recipes import build_recipe
 from private_codec.bridge import PrivateConditionalDecoderBridge, PrivateEncoderBridge
+from tests.support_factories import private_bridge_calls
 
 
 SMOKE_CONFIGS = (
@@ -93,7 +95,11 @@ def _private_encoder_component():
             "builder": "tests.support_factories:build_private_bridge_network",
             "runner": "tests.support_factories:run_private_encoder",
         },
-        "adapter": {"kind": "encoder", "input_mode": "rgb"},
+        "adapter": {
+            "kind": "encoder",
+            "input_mode": "rgb",
+            "latent_temporal_frames": "teacher",
+        },
     }
 
 
@@ -188,6 +194,63 @@ def test_component_builder_derives_bcthw_teacher_latent_reference():
         "layout": "BCTHW",
         "shape": [None, 16, 2, 32, 40],
     }
+
+
+def test_private_rgb_encoder_accepts_teacher_compatible_bcthw_output():
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    config["data"]["gt_size"] = [256, 320]
+    config["latent_spec"].update({"layout": "BCTHW", "temporal_downsample": 2})
+    component = _private_encoder_component()
+    component["kwargs"]["runner"] = "tests.support_factories:run_private_video_encoder"
+    config["components"]["student_encoder"] = component
+
+    components = build_components(config)
+    rgb = torch.zeros(1, 3, 256, 320)
+    latent = components["student_encoder"](rgb)
+
+    assert latent.shape == (1, 16, 2, 32, 40)
+    assert private_bridge_calls[-1]["rgb"] is rgb
+
+
+def test_private_bcthw_validation_is_independent_of_teacher_reference_mode():
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    config["latent_spec"].update({"layout": "BCTHW", "temporal_downsample": 2})
+    auto_component = _private_encoder_component()
+    auto_component["kwargs"]["runner"] = (
+        "tests.support_factories:run_private_two_frame_encoder"
+    )
+    config["components"]["student_encoder"] = auto_component
+
+    auto_encoder = build_components(config)["student_encoder"]
+    auto_latent = auto_encoder(torch.zeros(1, 3, 64, 64))
+
+    manual_component = _private_encoder_component()
+    manual_component.pop("teacher_reference")
+    manual_component["kwargs"].update(
+        runner="tests.support_factories:run_private_two_frame_encoder",
+        teacher_reference={"role": "manual_debug_only"},
+    )
+    config["components"]["student_encoder"] = manual_component
+
+    manual_encoder = build_components(config)["student_encoder"]
+    manual_latent = manual_encoder(torch.zeros(1, 3, 64, 64))
+
+    assert auto_latent.shape == manual_latent.shape == (1, 16, 2, 8, 8)
+    assert auto_encoder.latent_temporal_frames == manual_encoder.latent_temporal_frames == 3
+
+
+@pytest.mark.parametrize("value", (0, -1, True, False, "two", 1.5))
+def test_component_builder_rejects_invalid_latent_temporal_frames(value):
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    component = _private_encoder_component()
+    component["adapter"]["latent_temporal_frames"] = value
+    config["components"]["student_encoder"] = component
+
+    with pytest.raises(
+        ContractError,
+        match="student_encoder.*latent_temporal_frames.*teacher.*positive integer",
+    ):
+        build_components(config)
 
 
 def test_component_builder_does_not_inject_teacher_reference_without_opt_in():

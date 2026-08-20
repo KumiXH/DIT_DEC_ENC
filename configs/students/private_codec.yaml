@@ -13,6 +13,7 @@ components:
     adapter:
       kind: encoder
       input_mode: rgb
+      latent_temporal_frames: teacher
 
   # Legacy unconditional decoder used by the Wan decoder/autoencoder examples.
   student_decoder:

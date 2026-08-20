@@ -125,3 +125,39 @@ def test_private_codec_factories_build_stable_bridges():
 
     assert isinstance(encoder, PrivateEncoderBridge)
     assert isinstance(decoder, PrivateConditionalDecoderBridge)
+
+
+@pytest.mark.parametrize(
+    ("field", "import_path"),
+    (
+        ("builder", ":build_private_bridge_network"),
+        ("builder", "tests.support_factories:"),
+        ("runner", ":run_private_encoder"),
+        ("runner", "tests.support_factories:"),
+    ),
+)
+def test_bridge_rejects_malformed_import_paths_with_role(field, import_path):
+    from private_codec.bridge import PrivateEncoderBridge
+
+    paths = {
+        "builder": "tests.support_factories:build_private_bridge_network",
+        "runner": "tests.support_factories:run_private_encoder",
+    }
+    paths[field] = import_path
+
+    with pytest.raises(ValueError, match=rf"private codec {field}.*module:symbol"):
+        PrivateEncoderBridge(
+            **paths,
+            teacher_reference={"role": "encoder"},
+        )
+
+
+def test_bridge_validates_runner_before_calling_builder():
+    from private_codec.bridge import PrivateEncoderBridge
+
+    with pytest.raises(ValueError, match="private codec runner.*module:symbol"):
+        PrivateEncoderBridge(
+            builder="tests.support_factories:build_private_bridge_should_not_run",
+            runner=":run_private_encoder",
+            teacher_reference={"role": "encoder"},
+        )
