@@ -1,4 +1,4 @@
-# Fill the builder and runner functions in private_codec/entrypoints.py.
+# Runnable v0 defaults. Copy versions/v0 to versions/v1 for a private replacement.
 components:
   student_encoder:
     backend: external
@@ -6,8 +6,8 @@ components:
     checkpoint: null
     teacher_reference: auto
     kwargs:
-      builder: private_codec.entrypoints:build_encoder
-      runner: private_codec.entrypoints:run_encoder
+      builder: private_codec.versions.v0.entrypoints:build_encoder
+      runner: private_codec.versions.v0.entrypoints:run_encoder
       builder_kwargs: {}
       runner_kwargs: {}
     adapter:
@@ -21,12 +21,12 @@ components:
     factory: private_codec.factories:create_decoder
     checkpoint: null
     kwargs:
-      module_path: private_codec.wrapped_network
-      class_name: YourWrappedNetwork
+      module_path: private_codec.versions.v0.wrapped_network
+      class_name: V0UnconditionalDecoder
       init_kwargs: {}
     adapter:
       kind: decoder
-      output_mode: sparse_yuv
+      output_mode: rgb
 
   conditional_student_decoder:
     backend: external
@@ -34,8 +34,8 @@ components:
     checkpoint: null
     teacher_reference: auto
     kwargs:
-      builder: private_codec.entrypoints:build_decoder
-      runner: private_codec.entrypoints:run_decoder
+      builder: private_codec.versions.v0.entrypoints:build_decoder
+      runner: private_codec.versions.v0.entrypoints:run_decoder
       builder_kwargs: {}
       runner_kwargs: {}
     adapter:

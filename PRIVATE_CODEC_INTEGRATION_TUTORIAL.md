@@ -1,173 +1,138 @@
-# 私有黑盒编解码器接入教程
+# 私有黑盒编解码器接入教程：从 v0 复制新版本
 
-这份教程就是你的第二份 README。按顺序填写即可，不需要修改训练器、Recipe、公共 Bridge 或中央 factory。
+这份教程就是第二份 README。工程已经提供一个可运行、带完整注释的 `v0` 卷积示例。你先运行它确认环境和调用链，再把整个 v0 目录复制成 v1、v2 或实验版本，依葫芦画瓢替换成自己的两个网络文件。
 
 ## 当前完成和验证状态
 
 框架已经验证的部分：
 
-- Encoder 公共调用固定为 `encoder(rgb)`，项目只传 `[B,3,H,W]` RGB。
-- 条件 Decoder 公共调用固定为 `conditional_student_decoder(dit_latent, lq_rgb)`。
-- 私有 Decoder 入口收到关键字参数 `network`、原始 `lq_rgb`、`dit_latent` 和 `teacher_reference`。
-- `teacher_reference` 只提供理论教师输入输出尺寸，不 resize、padding、裁切或修改真实 Tensor。
-- 私有 RGB Encoder 可以返回 `BCHW` 或教师时间轴对应的 `BCTHW` latent。
-- 新网络版本只需要增加版本目录并切换 YAML 中的 builder/runner，不修改 `factories.py`。
-- 当前 CPU Conda 环境中，私有 Bridge、配置、Adapter 和教程直接相关测试已经通过。
-- 全量测试只有 `tests/test_trainer.py::test_multi_component_resume_is_stable_across_python_hash_seeds` 会触发已在未修改 `main` 上复现的 OpenMP 子进程环境问题；排除该项后的全量测试已经通过。
+- Encoder 的项目接口固定为 `encoder(rgb)`，项目只给黑盒网络 `[B,3,H,W]` RGB。
+- 条件 Decoder 的项目接口固定为 `conditional_student_decoder(dit_latent, lq_rgb)`。
+- 私有 Decoder 入口收到 `network`、原始 `lq_rgb`、`dit_latent` 和 `teacher_reference`。
+- `teacher_reference` 只包含理论教师输入输出尺寸，不会 resize、padding、裁切或修改真实 Tensor。
+- Encoder 可以返回符合配置的 BCHW 或 BCTHW latent。
+- v0 示例网络已经验证：Encoder、条件 Decoder、无条件 Decoder、反向传播、配置导入和错误提示都有自动化测试。
+- 真实私有网络仍需验证：复制 v0 并替换源码后，仍要在你的 CUDA 训练环境运行 probe 和短训练。
+- 当前测试环境有一个与本功能无关的已知排除项：`test_multi_component_resume_is_stable_across_python_hash_seeds` 会在 Conda 子进程重复加载 OpenMP 时崩溃。
 
-真实私有网络尚未验证，因为下面三个文件仍是 0 字节空文件，等待你粘贴源码：
+## 第 0 步：认识现在的目录
+
+公共代码和版本代码已经分开：
 
 ```text
-src/private_codec/base_network.py
-src/private_codec/wrapped_network.py
-src/private_codec/entrypoints.py
+src/private_codec/
+├── __init__.py
+├── bridge.py
+├── factories.py
+└── versions/
+    ├── __init__.py
+    └── v0/
+        ├── __init__.py
+        ├── base_network.py
+        ├── wrapped_network.py
+        └── entrypoints.py
 ```
 
-因此，“框架桥接已通过测试”和“你的真实模型已经成功训练”是两件事。后者必须在你填完文件、准备好权重、数据和 CUDA 环境后运行 probe/训练才能确认。
+三个可以复制修改的 v0 文件是：
 
-## 第 0 步：确认使用哪个 Python
+```text
+src/private_codec/versions/v0/base_network.py
+src/private_codec/versions/v0/wrapped_network.py
+src/private_codec/versions/v0/entrypoints.py
+```
 
-当前机器的 Conda base 环境存在，但 `python` 和 `conda` 没有加入当前 PowerShell 的 `PATH`。先在仓库根目录执行：
+它们的职责分别是：
+
+- `base_network.py`：第一个网络文件，保存基础网络本身。
+- `wrapped_network.py`：第二个网络文件，继承基础网络、设置不同初始化参数或包装私有 `forward`。
+- `entrypoints.py`：中间地带，负责项目输入到私有网络输入的全部转换，以及私有输出到项目输出的映射。
+
+公共基础设施不属于任何网络版本。增加 v1、v2 时，不要修改 `src/private_codec/bridge.py`，也不要修改 `src/private_codec/factories.py`。
+
+## 第 1 步：确认使用哪个 Python
+
+当前机器的 Conda base 环境存在，但 `python` 和 `conda` 不一定在 PowerShell 的 `PATH`。在仓库根目录执行：
 
 ```powershell
 $CodecConda = 'C:\Users\xh932\anaconda3\Scripts\conda.exe'
 $env:PYTHONPATH = (Resolve-Path 'src').Path
-& $CodecConda run --no-capture-output -n base python -c "import numpy, torch, pytest, sys; print(sys.executable); print(torch.__version__); print('cuda=', torch.cuda.is_available())"
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; print(torch.__version__); print('cuda=', torch.cuda.is_available())"
 ```
 
-当前核验到的是 Python 3.13.9、PyTorch 2.11.0 CPU 版，`torch.cuda.is_available()` 为 `False`。这个环境足以编辑代码和运行框架单元测试，但不能验证真实 CUDA 训练或 Flash Attention。
+当前核验使用的是 CPU 版 PyTorch。它可以运行 v0 和框架单元测试，但不能验证真实 CUDA 训练或 Flash Attention。
 
-`PYTHONPATH` 让尚未执行 `pip install -e .` 的源码仓库也能导入 `private_codec` 和 `distill_codec`。后面的导入、Bridge、probe 和训练命令请在这个 PowerShell 会话中继续执行。
-
-以后本教程中的 `python ...` 命令，在当前 PowerShell 中都可以写成：
-
-```powershell
-& $CodecConda run --no-capture-output -n base python ...
-```
-
-如果你进入了另一个已经激活的 CUDA Conda 环境，也可以直接使用该环境的 `python`。
-
-## 第 1 步：填写基础网络
-
-把第一个 `.py` 的完整网络源码粘贴到：
-
-```text
-src/private_codec/base_network.py
-```
-
-这个文件只保存网络本身。暂时不要为了适配工程而改它的输入、输出或 `forward`。
-
-填完先检查 Python 语法：
-
-```powershell
-& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/base_network.py
-```
-
-命令退出码为 0 且没有报错，只说明语法正确，不说明权重或 forward 已经正确。
-
-## 第 2 步：填写继承封装网络
-
-把继承基础网络、修改初始化参数或外套一层 `forward` 的第二个 `.py` 粘贴到：
-
-```text
-src/private_codec/wrapped_network.py
-```
-
-包内导入使用相对路径。例如：
-
-```python
-from .base_network import BaseNetwork
-
-
-class YourWrappedNetwork(BaseNetwork):
-    ...
-```
-
-然后检查语法和导入：
-
-```powershell
-& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/wrapped_network.py
-& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; import private_codec.base_network, private_codec.wrapped_network; print('network imports ok')"
-```
-
-如果这里提示缺少第三方包，应该把依赖安装到真实训练环境，而不是修改公共 Bridge。
-
-## 第 3 步：填写唯一的中间层
+## 第 2 步：先看懂 v0 Encoder
 
 打开：
 
 ```text
-src/private_codec/entrypoints.py
+src/private_codec/versions/v0/base_network.py
 ```
 
-这里是你唯一需要实现“工程 Tensor 如何进入黑盒网络”的地方。填写以下四个函数，并把类名、初始化参数和 forward 调用替换成你的真实实现：
+v0 Encoder 使用三层步长为 2 的卷积：
+
+```text
+RGB [B,3,H,W]
+  -> stride-2 convolution
+  -> stride-2 convolution
+  -> stride-2 convolution
+  -> latent [B,16,H/8,W/8]
+```
+
+默认 `latent_channels=16`，输入高宽必须能被 8 整除。这个限制只是 v0 示例自己的限制，不是公共 Bridge 强加给真实黑盒网络的限制。复制成新版本后，你可以在私有代码里自行 resize、padding 或使用完全不同的结构，只要最终返回值符合项目 `latent_spec`。
+
+## 第 3 步：先看懂 v0 Decoder
+
+同一个 `base_network.py` 中，条件 Decoder 做三件事：
+
+```text
+dit_latent -> 卷积投影 -> 上采样到 lq_rgb 高宽 ┐
+                                                ├-> 特征融合 -> RGB
+lq_rgb     -> 卷积投影 --------------------------┘
+```
+
+v0 返回 `[B,3,Hlq,Wlq]` RGB。它使用 `lq_rgb.shape[-2:]` 作为实际输出尺寸，示范尺寸处理属于私有网络，而不是 Bridge。
+
+`wrapped_network.py` 中的私有条件 Decoder 故意定义成：
 
 ```python
-from __future__ import annotations
+network(private_lq_rgb, private_latent)
+```
 
-from typing import Any, Mapping
+它和项目内部的顺序不同，目的是直接演示 `entrypoints.py` 可以自由适配你的私有 `forward`。
 
-from torch import Tensor, nn
+## 第 4 步：理解唯一的中间层
 
-from .wrapped_network import YourWrappedNetwork
+打开：
 
+```text
+src/private_codec/versions/v0/entrypoints.py
+```
 
-def build_encoder(**kwargs: Any) -> nn.Module:
-    # 这里只负责初始化 Encoder；需要时也可以在这里读取特殊格式权重。
-    return YourWrappedNetwork(codec_mode="encoder", **kwargs)
+每个版本都保留以下四个对外函数：
 
-
-def run_encoder(
-    *,
-    network: nn.Module,
-    rgb: Tensor,
-    teacher_reference: Mapping[str, Any],
-    **kwargs: Any,
-) -> Tensor:
-    # 项目只提供原始 RGB。颜色转换、归一化、resize、padding、维度转换、
-    # 嵌套子网络选择都由你在这里完成。
-    private_input = rgb
-    dit_latent = network(private_input)
-    return dit_latent
+```python
+def build_encoder(**kwargs):
+    ...
 
 
-def build_decoder(**kwargs: Any) -> nn.Module:
-    # 这里只负责初始化 Decoder。
-    return YourWrappedNetwork(codec_mode="decoder", **kwargs)
+def run_encoder(*, network, rgb, teacher_reference, **kwargs):
+    ...
+
+
+def build_decoder(**kwargs):
+    ...
 
 
 def run_decoder(
-    *,
-    network: nn.Module,
-    lq_rgb: Tensor,
-    dit_latent: Tensor,
-    teacher_reference: Mapping[str, Any],
-    **kwargs: Any,
-) -> Tensor:
-    # lq_rgb 是原始 LQ RGB，dit_latent 是项目当前的 DiT latent。
-    # 二者如何变换、融合及送入多少层嵌套网络，完全由你决定。
-    output_rgb = network(dit_latent, lq_rgb)
-    return output_rgb
+    *, network, lq_rgb, dit_latent, teacher_reference, **kwargs
+):
+    ...
 ```
 
-必须遵守的返回契约：
-
-- `build_encoder` 和 `build_decoder` 必须返回 `torch.nn.Module`。
-- `run_encoder` 必须返回 Tensor。`latent_spec.layout: BCHW` 时返回 `[B,C,Hl,Wl]`；`BCTHW` 时返回 `[B,C,Tl,Hl,Wl]`。
-- `run_decoder` 必须返回 `[B,3,H,W]` RGB Tensor。
-- 训练 forward 不能整体放进 `torch.no_grad()`，返回值不能在 loss 前 `.detach()`，否则学生网络没有梯度。
-- `teacher_reference` 可以打印或断言辅助调试，但不要用它强行修改项目传入的真实 Tensor。
-
-填完执行：
-
-```powershell
-& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/entrypoints.py
-& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; import private_codec.entrypoints; print('entrypoints import ok')"
-```
-
-## 第 4 步：理解项目实际传入什么
-
-Encoder 的完整调用链是：
+Encoder 的完整调用链：
 
 ```text
 项目 RGB [B,3,H,W]
@@ -177,9 +142,7 @@ Encoder 的完整调用链是：
   -> 你的 latent
 ```
 
-项目不会提前替你转 YUV、归一化或 resize。
-
-条件 Decoder 的完整调用链是：
+条件 Decoder 的完整调用链：
 
 ```text
 项目调用 conditional_student_decoder(dit_latent, lq_rgb)
@@ -193,17 +156,115 @@ Encoder 的完整调用链是：
   -> 你的 RGB [B,3,H,W]
 ```
 
-工程内部的位置参数顺序是 `(dit_latent, lq_rgb)`，Bridge 到你的私有入口后全部变成有名字的关键字参数，因此不会因为你把 `lq_rgb` 写在前面而传反。
+项目位置参数顺序虽然是 `(dit_latent, lq_rgb)`，Bridge 到私有入口后全部使用有名字的关键字参数。v0 的 `run_decoder` 再调用：
 
-## 第 5 步：查看教师理论尺寸
+```python
+network(private_lq_rgb, private_latent)
+```
 
-在 `configs/students/private_codec.yaml` 中保留：
+因此，无论你的嵌套网络采用什么参数顺序，都在 `run_decoder` 中明确映射即可。
+
+## 第 5 步：运行 v0 语法和导入检查
+
+```powershell
+& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v0/base_network.py
+& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v0/wrapped_network.py
+& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v0/entrypoints.py
+& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; import private_codec.versions.v0.entrypoints; print('v0 imports ok')"
+```
+
+`py_compile` 退出码为 0 只代表语法正确。下面的 Bridge probe 才会实际构造网络并执行 forward。
+
+## 第 6 步：单独运行 v0 Encoder Bridge
+
+```powershell
+& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; from private_codec.factories import create_encoder; m=create_encoder(builder='private_codec.versions.v0.entrypoints:build_encoder', runner='private_codec.versions.v0.entrypoints:run_encoder', builder_kwargs={}, runner_kwargs={}, teacher_reference={'role':'encoder'}); x=torch.randn(1,3,256,256); y=m(x); print('encoder output=', tuple(y.shape), y.dtype)"
+```
+
+默认输出应为：
+
+```text
+encoder output= (1, 16, 32, 32)
+```
+
+这里用到的公共 factory 是 `private_codec.factories:create_encoder`。
+
+## 第 7 步：单独运行 v0 条件 Decoder Bridge
+
+```powershell
+& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; from private_codec.factories import create_conditional_decoder; m=create_conditional_decoder(builder='private_codec.versions.v0.entrypoints:build_decoder', runner='private_codec.versions.v0.entrypoints:run_decoder', builder_kwargs={}, runner_kwargs={}, teacher_reference={'role':'conditional_decoder'}); z=torch.randn(1,16,32,32); lq=torch.randn(1,3,256,256); y=m(z,lq); print('decoder output=', tuple(y.shape), y.dtype)"
+```
+
+默认输出应为：
+
+```text
+decoder output= (1, 3, 256, 256)
+```
+
+这里用到的公共 factory 是 `private_codec.factories:create_conditional_decoder`，Adapter 配置必须保持 `output_mode: rgb`。
+
+## 第 8 步：理解默认 YAML
+
+打开：
+
+```text
+configs/students/private_codec.yaml
+```
+
+Encoder 默认使用 v0：
+
+```yaml
+student_encoder:
+  backend: external
+  factory: private_codec.factories:create_encoder
+  checkpoint: null
+  teacher_reference: auto
+  kwargs:
+    builder: private_codec.versions.v0.entrypoints:build_encoder
+    runner: private_codec.versions.v0.entrypoints:run_encoder
+    builder_kwargs: {}
+    runner_kwargs: {}
+  adapter:
+    kind: encoder
+    input_mode: rgb
+    latent_temporal_frames: teacher
+```
+
+条件 Decoder 默认使用 v0：
+
+```yaml
+conditional_student_decoder:
+  backend: external
+  factory: private_codec.factories:create_conditional_decoder
+  checkpoint: null
+  teacher_reference: auto
+  kwargs:
+    builder: private_codec.versions.v0.entrypoints:build_decoder
+    runner: private_codec.versions.v0.entrypoints:run_decoder
+    builder_kwargs: {}
+    runner_kwargs: {}
+  adapter:
+    kind: decoder
+    output_mode: rgb
+    accepts_condition: true
+```
+
+参数用途：
+
+- `builder_kwargs`：初始化网络时传给 `build_encoder` 或 `build_decoder`，适合通道数、配置路径、版本名和私有权重路径。
+- `runner_kwargs`：每次 forward 时传给 `run_encoder` 或 `run_decoder`，适合运行模式或可微处理选项。
+- `checkpoint`：只有整个 Bridge 可以直接用标准 `state_dict` 加载时才填写；特殊权重格式可以在 `build_*` 内自行加载。
+- `latent_temporal_frames: teacher`：只约束 BCTHW latent 的理论时间长度，不会把传给私有 Encoder 的 RGB 变成视频 Tensor。
+
+## 第 9 步：查看教师理论尺寸
+
+保留：
 
 ```yaml
 teacher_reference: auto
 ```
 
-Encoder 的参考信息类似：
+Encoder 的 `teacher_reference` 类似：
 
 ```python
 {
@@ -217,137 +278,112 @@ Encoder 的参考信息类似：
     },
     "outputs": {
         "latent": {
-            "layout": "BCTHW",
-            "shape": [None, 16, 2, 32, 32],
-        },
-    },
-}
-```
-
-条件 Decoder 的参考信息类似：
-
-```python
-{
-    "role": "conditional_decoder",
-    "inputs": {
-        "lq_rgb": {
-            "layout": "BCHW",
-            "shape": [None, 3, 256, 256],
-            "source": "teacher_condition",
-        },
-        "dit_latent": {
             "layout": "BCHW",
             "shape": [None, 16, 32, 32],
         },
     },
-    "outputs": {
-        "rgb": {
-            "layout": "BCHW",
-            "shape": [None, 3, 256, 256],
-        },
-    },
 }
 ```
 
-这些尺寸从最终合并后的 `data`、`recipe`、教师 adapter、`latent_provider` 和 `latent_spec` 推导。它们是教师理论路径的调试参考，不是对你私有网络内部处理方式的命令。
+如果配置使用 BCTHW，它也可能给出 `[B,C,T,H,W]` 理论 latent 尺寸。条件 Decoder 会收到理论 LQ RGB、DiT latent 和输出 RGB 尺寸。
 
-特别注意：FlashVSR 教师可能收到对齐到 GT 尺寸的 LQ，而你的 `run_decoder` 收到的仍是 `batch.lq_rgb` 中的原始 LQ RGB。
+这些信息只方便打印、断言和调试。不要因为理论尺寸不同就在公共 Bridge 中修改真实 Tensor。FlashVSR 教师可能使用对齐到 GT 的 LQ，但私有 `run_decoder` 收到的仍是原始 `batch.lq_rgb`。
 
-## 第 6 步：填写初始化和 forward 参数
+## 第 10 步：复制 v0 创建你的 v1
 
-打开：
+在仓库根目录执行：
+
+```powershell
+Copy-Item -Recurse src/private_codec/versions/v0 src/private_codec/versions/v1
+```
+
+复制后得到：
 
 ```text
-configs/students/private_codec.yaml
+src/private_codec/versions/v1/
+├── __init__.py
+├── base_network.py
+├── wrapped_network.py
+└── entrypoints.py
 ```
 
-Encoder 已经连接到公共 factory：
+然后按顺序操作：
+
+1. 把你的第一个网络源码放入 `versions/v1/base_network.py`。
+2. 把继承网络或外套 `forward` 的第二个源码放入 `versions/v1/wrapped_network.py`。
+3. 在 `versions/v1/entrypoints.py` 修改 import、初始化参数和 forward 映射。
+4. 搜索 v0 文件中的 `COPY POINT` 注释；这些就是复制后最需要检查的位置。
+5. 不要删除四个 entrypoint 函数，也不要改变它们面向 Bridge 的参数名称。
+
+你的包内导入应使用相对路径，例如：
+
+```python
+from .base_network import BaseNetwork
+```
+
+## 第 11 步：把 YAML 从 v0 切到 v1
+
+建议先复制一份 student YAML，再只修改四条版本路径：
 
 ```yaml
-student_encoder:
-  backend: external
-  factory: private_codec.factories:create_encoder
-  checkpoint: null
-  teacher_reference: auto
-  kwargs:
-    builder: private_codec.entrypoints:build_encoder
-    runner: private_codec.entrypoints:run_encoder
-    builder_kwargs: {}
-    runner_kwargs: {}
-  adapter:
-    kind: encoder
-    input_mode: rgb
-    latent_temporal_frames: teacher
+kwargs:
+  builder: private_codec.versions.v1.entrypoints:build_encoder
+  runner: private_codec.versions.v1.entrypoints:run_encoder
+  builder_kwargs:
+    config_path: D:/models/private_codec/v1.yaml
+    weights_path: D:/models/private_codec/v1.pth
+  runner_kwargs: {}
 ```
 
-条件 Decoder 已经连接到公共 factory：
+条件 Decoder 使用：
 
 ```yaml
-conditional_student_decoder:
-  backend: external
-  factory: private_codec.factories:create_conditional_decoder
-  checkpoint: null
-  teacher_reference: auto
-  kwargs:
-    builder: private_codec.entrypoints:build_decoder
-    runner: private_codec.entrypoints:run_decoder
-    builder_kwargs: {}
-    runner_kwargs: {}
-  adapter:
-    kind: decoder
-    output_mode: rgb
-    accepts_condition: true
+kwargs:
+  builder: private_codec.versions.v1.entrypoints:build_decoder
+  runner: private_codec.versions.v1.entrypoints:run_decoder
+  builder_kwargs:
+    config_path: D:/models/private_codec/v1.yaml
+    weights_path: D:/models/private_codec/v1.pth
+  runner_kwargs: {}
 ```
 
-你通常只修改以下位置：
+以后增加 v2、v3 时，继续复制完整版本目录并把路径改为 `private_codec.versions.v2.entrypoints`、`private_codec.versions.v3.entrypoints`。不要给每个版本在公共 factory 里新增函数。
 
-- `builder_kwargs`：初始化网络时传给 `build_encoder`/`build_decoder`，例如模型版本、通道数、配置路径和私有权重路径。
-- `runner_kwargs`：每次 forward 时传给 `run_encoder`/`run_decoder`，例如运行模式或可微的处理选项。
-- `checkpoint`：仅在你的 Bridge 整体可以直接用标准 `state_dict` 加载时填写；特殊权重格式建议在 `build_*` 中读取，并保持这里为 `null`。
-- `latent_temporal_frames: teacher`：只定义 `BCTHW` latent 应匹配教师的理论时间轴，不改变传给 `run_encoder` 的 4D RGB。也可以填写正整数；它与 `teacher_reference` 调试开关相互独立。
+## 第 12 步：验证你复制出的版本
 
-示例：
-
-```yaml
-builder_kwargs:
-  config_path: D:/models/private_codec/v1.yaml
-  weights_path: D:/models/private_codec/v1.pth
-  variant: v1
-runner_kwargs:
-  normalize_input: true
-```
-
-不要给每个模型版本在 `factories.py` 新增一个函数。
-
-## 第 7 步：先单独验证 Bridge
-
-在运行完整教师模型前，可以先用随机 Tensor 验证你的 builder/runner 是否能调用。下面的尺寸只是调试输入，请按你的实际模型改：
+先做语法和导入检查：
 
 ```powershell
-& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; from private_codec.factories import create_encoder; m=create_encoder(builder='private_codec.entrypoints:build_encoder', runner='private_codec.entrypoints:run_encoder', builder_kwargs={}, runner_kwargs={}, teacher_reference={'role':'encoder','inputs':{'rgb':{'layout':'BCHW','shape':[None,3,256,256]}},'outputs':{'latent':{'layout':'BCHW','shape':[None,16,32,32]}}}); y=m(torch.randn(1,3,256,256)); print('encoder output=', tuple(y.shape), y.dtype)"
+& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v1/base_network.py
+& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v1/wrapped_network.py
+& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v1/entrypoints.py
+& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; import private_codec.versions.v1.entrypoints; print('v1 imports ok')"
 ```
 
-```powershell
-& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; from private_codec.factories import create_conditional_decoder; m=create_conditional_decoder(builder='private_codec.entrypoints:build_decoder', runner='private_codec.entrypoints:run_decoder', builder_kwargs={}, runner_kwargs={}, teacher_reference={'role':'conditional_decoder','inputs':{'lq_rgb':{'layout':'BCHW','shape':[None,3,256,256]},'dit_latent':{'layout':'BCHW','shape':[None,16,32,32]}},'outputs':{'rgb':{'layout':'BCHW','shape':[None,3,256,256]}}}); y=m(torch.randn(1,16,32,32), torch.randn(1,3,256,256)); print('decoder output=', tuple(y.shape), y.dtype)"
-```
+再把第 6、7 步命令中的 v0 路径换成 v1，验证 Builder、Runner、尺寸和梯度。
 
-这一步成功说明你的私有 builder 和 runner 可导入、可构造、能返回 Tensor。它还没有验证教师模型、数据集、loss 或训练反向传播。
+必须遵守的返回契约：
 
-## 第 8 步：选择项目配置并运行 probe
+- `build_encoder` 和 `build_decoder` 返回 `torch.nn.Module`。
+- `run_encoder` 返回 Tensor；按照项目 `latent_spec` 返回 BCHW 或 BCTHW latent。
+- `run_decoder` 返回 `[B,3,H,W]` RGB Tensor。
+- 训练 forward 不能整体放进 `torch.no_grad()`。
+- loss 前不能对学生输出调用 `.detach()`。
+- 所有颜色转换、归一化、resize、padding、维度转换和嵌套网络选择由你的版本代码负责。
 
-Encoder 使用：
+## 第 13 步：运行项目 probe
+
+Encoder 配置：
 
 ```text
 configs/local/private_codec_encoder.yaml
 ```
 
-你的 `LQ RGB + DiT latent -> RGB` 条件 Decoder 使用：
+条件 Decoder 配置：
 
 ```text
 configs/local/private_codec_conditional_decoder.yaml
 ```
-
-不要误用旧的 `configs/local/private_codec_decoder.yaml`。旧配置对应不接收 LQ 的 Wan 无条件 `student_decoder`。
 
 准备好真实教师权重、数据路径和 CUDA 环境后运行：
 
@@ -356,9 +392,9 @@ python -m distill_codec.cli probe --config configs/local/private_codec_encoder.y
 python -m distill_codec.cli probe --config configs/local/private_codec_conditional_decoder.yaml
 ```
 
-`python -m distill_codec.cli probe` 会真实构造教师、私有学生并执行 forward。只有这一步通过，才能说明真实模型的路径、依赖、输入输出和项目契约已经接通。
+`python -m distill_codec.cli probe` 会真实构造教师和私有学生并执行 forward。只有这一步通过，才能说明真实版本的路径、依赖、输入输出和项目契约已经接通。
 
-## 第 9 步：开始训练
+## 第 14 步：短训练检查
 
 条件 Decoder 示例：
 
@@ -374,58 +410,23 @@ python -m distill_codec.cli train --config configs/local/private_codec_condition
 - validation 图片尺寸和颜色正确；
 - checkpoint 能保存并恢复。
 
-当前 CPU 环境不能替代这一步的真实 CUDA 验证。
-
-## 第 10 步：增加 V2、V3 或实验版本
-
-新增 V2 时创建：
-
-```text
-src/private_codec/versions/v2/
-├── __init__.py
-├── base_network.py
-├── wrapped_network.py
-└── entrypoints.py
-```
-
-V2 的 `entrypoints.py` 仍实现同样四个函数。然后复制一份 student YAML，只修改路径和参数：
-
-```yaml
-kwargs:
-  builder: private_codec.versions.v2.entrypoints:build_decoder
-  runner: private_codec.versions.v2.entrypoints:run_decoder
-  builder_kwargs:
-    variant: v2
-  runner_kwargs: {}
-```
-
-V3 使用 `private_codec.versions.v3.entrypoints`，以此类推。中央 `src/private_codec/factories.py` 和 `src/private_codec/bridge.py` 不需要知道任何版本号。
-
-## 你不需要修改的文件
-
-只要外部接口没有改变，就不要按版本修改：
-
-```text
-src/private_codec/bridge.py
-src/private_codec/factories.py
-src/distill_codec/adapters.py
-src/distill_codec/recipes.py
-src/distill_codec/trainer.py
-```
+CPU 的 v0 测试不能替代真实私有网络的 CUDA probe 和短训练。
 
 ## 最终逐项检查
 
-- [ ] `base_network.py` 已粘贴基础网络并通过 `py_compile`
-- [ ] `wrapped_network.py` 已粘贴继承网络并能导入
-- [ ] `entrypoints.py` 已实现四个 builder/runner 函数
-- [ ] `run_encoder` 只接收项目 RGB，并返回符合 `latent_spec` 的 BCHW/BCTHW latent
-- [ ] `run_decoder` 接收原始 LQ RGB 和 DiT latent，并返回三通道 RGB
-- [ ] 所有私有颜色、尺寸、归一化和嵌套网络逻辑都在 `entrypoints.py` 或私有网络内部
+- [ ] 已先运行 v0 Encoder 和 Decoder Bridge probe
+- [ ] 已把完整 `versions/v0` 复制成一个新版本目录
+- [ ] `base_network.py` 已替换为第一个网络文件
+- [ ] `wrapped_network.py` 已替换为继承或封装网络
+- [ ] `entrypoints.py` 已保留并实现四个 builder/runner 函数
+- [ ] Encoder 只从项目接收 RGB，并返回符合 `latent_spec` 的 latent
+- [ ] 条件 Decoder 接收原始 LQ RGB 和 DiT latent，并返回 RGB
+- [ ] 私有尺寸、颜色、归一化和嵌套逻辑全部留在版本目录内
+- [ ] YAML 已从 v0 切换到新版本 import path
 - [ ] `builder_kwargs` 和 `runner_kwargs` 已填写真实参数
 - [ ] `teacher_reference` 只用于查看教师理论尺寸
-- [ ] 随机 Tensor Bridge 检查已通过
-- [ ] 真实 Encoder/Decoder probe 已在目标 CUDA 环境通过
-- [ ] 短训练已确认梯度、optimizer、验证图和 checkpoint
+- [ ] 新版本 Bridge probe 已通过
+- [ ] 真实 CUDA probe 和短训练已确认梯度、输出和 checkpoint
 
 ## 相关文档
 
