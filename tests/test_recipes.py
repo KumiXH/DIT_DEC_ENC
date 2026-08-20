@@ -86,6 +86,65 @@ def test_unconditional_flashvsr_recipe_does_not_pass_condition_to_student():
     assert output.metadata["condition_shape"] == [2, 3, 64, 64]
 
 
+def test_conditional_flashvsr_teacher_gets_aligned_lq_while_student_gets_raw_lq():
+    class RecordingTeacherDecoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.received_condition = None
+
+        def forward(self, latent, condition):
+            self.received_condition = condition
+            return torch.nn.functional.interpolate(
+                condition,
+                size=(64, 64),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+    class RecordingStudentDecoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.scale = nn.Parameter(torch.tensor(1.0))
+            self.received_condition = None
+
+        def forward(self, latent, condition):
+            self.received_condition = condition
+            return torch.nn.functional.interpolate(
+                condition,
+                size=(64, 64),
+                mode="bilinear",
+                align_corners=False,
+            ) * self.scale
+
+    batch = DistillBatch(
+        lq_rgb=torch.rand(2, 3, 32, 32),
+        gt_rgb=torch.rand(2, 3, 64, 64),
+        relative_path=("a.png", "b.png"),
+    )
+    components = _components()
+    teacher = RecordingTeacherDecoder()
+    student = RecordingStudentDecoder()
+    components["tc_decoder"] = DecoderAdapter(
+        freeze_module(teacher),
+        output_mode="rgb",
+        accepts_condition=True,
+    )
+    components["conditional_student_decoder"] = DecoderAdapter(
+        student,
+        output_mode="rgb",
+        accepts_condition=True,
+    )
+    recipe = build_recipe("flashvsr_decoder_conditional_student", components)
+
+    output = recipe(batch)
+
+    assert teacher.received_condition is not batch.lq_rgb
+    assert teacher.received_condition.shape[-2:] == (64, 64)
+    assert student.received_condition is batch.lq_rgb
+    assert student.received_condition.shape[-2:] == (32, 32)
+    assert output.metadata["condition_shape"] == [2, 3, 64, 64]
+
+
 def test_encoder_compatibility_loss_reaches_student_but_not_teacher_decoder():
     components = _components()
     recipe = build_recipe("wan_encoder_distill", components, weights={"compat": 1.0})

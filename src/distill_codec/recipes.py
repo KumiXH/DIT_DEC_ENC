@@ -224,10 +224,11 @@ class DistillationRecipe(nn.Module):
         flashvsr: bool,
         conditional: bool,
     ) -> RecipeOutput:
-        condition_rgb = batch.lq_rgb
-        if flashvsr and condition_rgb.shape[-2:] != batch.gt_rgb.shape[-2:]:
-            condition_rgb = F.interpolate(
-                condition_rgb,
+        student_condition_rgb = batch.lq_rgb
+        teacher_condition_rgb = student_condition_rgb
+        if flashvsr and teacher_condition_rgb.shape[-2:] != batch.gt_rgb.shape[-2:]:
+            teacher_condition_rgb = F.interpolate(
+                teacher_condition_rgb,
                 size=batch.gt_rgb.shape[-2:],
                 mode="bicubic",
                 align_corners=False,
@@ -235,11 +236,14 @@ class DistillationRecipe(nn.Module):
         with torch.no_grad():
             latent = self.components["latent_provider"](batch)
             if flashvsr:
-                teacher_rgb = self.components["tc_decoder"](latent, condition_rgb)
+                teacher_rgb = self.components["tc_decoder"](latent, teacher_condition_rgb)
             else:
                 teacher_rgb = self.components["teacher_decoder"](latent)
         if conditional:
-            student_rgb = self.components["conditional_student_decoder"](latent, condition_rgb)
+            student_rgb = self.components["conditional_student_decoder"](
+                latent,
+                student_condition_rgb,
+            )
         else:
             student_rgb = self.components["student_decoder"](latent)
         losses = {
@@ -274,7 +278,7 @@ class DistillationRecipe(nn.Module):
             },
             metadata={
                 "student_accepts_condition": conditional,
-                "condition_shape": list(condition_rgb.shape),
+                "condition_shape": list(teacher_condition_rgb.shape),
             },
         )
 
