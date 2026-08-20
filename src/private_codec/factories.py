@@ -6,6 +6,8 @@ from typing import Any
 
 from torch import nn
 
+from .bridge import PrivateConditionalDecoderBridge, PrivateEncoderBridge
+
 
 def _create_model(
     *,
@@ -33,8 +35,14 @@ def _create_model(
 
 
 def create_encoder(**kwargs: Any) -> nn.Module:
+    if "builder" in kwargs or "runner" in kwargs:
+        return PrivateEncoderBridge(**kwargs)
     return _create_model(**kwargs)
 
 
 def create_decoder(**kwargs: Any) -> nn.Module:
     return _create_model(**kwargs)
+
+
+def create_conditional_decoder(**kwargs: Any) -> nn.Module:
+    return PrivateConditionalDecoderBridge(**kwargs)
