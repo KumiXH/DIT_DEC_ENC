@@ -1,0 +1,25 @@
+# Fill class_name and init_kwargs after pasting the two private network files.
+components:
+  student_encoder:
+    backend: external
+    factory: private_codec.factories:create_encoder
+    checkpoint: null
+    kwargs:
+      module_path: private_codec.wrapped_network
+      class_name: YourWrappedNetwork
+      init_kwargs: {}
+    adapter:
+      kind: encoder
+      input_mode: packed_6ch
+
+  student_decoder:
+    backend: external
+    factory: private_codec.factories:create_decoder
+    checkpoint: null
+    kwargs:
+      module_path: private_codec.wrapped_network
+      class_name: YourWrappedNetwork
+      init_kwargs: {}
+    adapter:
+      kind: decoder
+      output_mode: sparse_yuv
