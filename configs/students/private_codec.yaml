@@ -1,17 +1,20 @@
-# Fill class_name and init_kwargs after pasting the two private network files.
+# Fill the builder and runner functions in private_codec/entrypoints.py.
 components:
   student_encoder:
     backend: external
     factory: private_codec.factories:create_encoder
     checkpoint: null
+    teacher_reference: auto
     kwargs:
-      module_path: private_codec.wrapped_network
-      class_name: YourWrappedNetwork
-      init_kwargs: {}
+      builder: private_codec.entrypoints:build_encoder
+      runner: private_codec.entrypoints:run_encoder
+      builder_kwargs: {}
+      runner_kwargs: {}
     adapter:
       kind: encoder
-      input_mode: packed_6ch
+      input_mode: rgb
 
+  # Legacy unconditional decoder used by the Wan decoder/autoencoder examples.
   student_decoder:
     backend: external
     factory: private_codec.factories:create_decoder
@@ -23,3 +26,18 @@ components:
     adapter:
       kind: decoder
       output_mode: sparse_yuv
+
+  conditional_student_decoder:
+    backend: external
+    factory: private_codec.factories:create_conditional_decoder
+    checkpoint: null
+    teacher_reference: auto
+    kwargs:
+      builder: private_codec.entrypoints:build_decoder
+      runner: private_codec.entrypoints:run_decoder
+      builder_kwargs: {}
+      runner_kwargs: {}
+    adapter:
+      kind: decoder
+      output_mode: rgb
+      accepts_condition: true
