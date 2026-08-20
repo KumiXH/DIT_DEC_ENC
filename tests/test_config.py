@@ -6,6 +6,7 @@ import yaml
 from distill_codec.config import apply_overrides, build_components, load_config, preflight_config
 from distill_codec.contracts import ContractError
 from distill_codec.recipes import build_recipe
+from private_codec.bridge import PrivateConditionalDecoderBridge, PrivateEncoderBridge
 
 
 SMOKE_CONFIGS = (
@@ -80,6 +81,149 @@ def test_component_builder_requires_explicit_color_contract():
     del config["color"]
 
     with pytest.raises(ContractError, match="config requires color"):
+        build_components(config)
+
+
+def _private_encoder_component():
+    return {
+        "backend": "external",
+        "factory": "private_codec.factories:create_encoder",
+        "teacher_reference": "auto",
+        "kwargs": {
+            "builder": "tests.support_factories:build_private_bridge_network",
+            "runner": "tests.support_factories:run_private_encoder",
+        },
+        "adapter": {"kind": "encoder", "input_mode": "rgb"},
+    }
+
+
+def _private_conditional_decoder_component():
+    return {
+        "backend": "external",
+        "factory": "private_codec.factories:create_conditional_decoder",
+        "teacher_reference": "auto",
+        "kwargs": {
+            "builder": "tests.support_factories:build_private_bridge_network",
+            "runner": "tests.support_factories:run_private_decoder",
+        },
+        "adapter": {
+            "kind": "decoder",
+            "output_mode": "rgb",
+            "accepts_condition": True,
+        },
+    }
+
+
+def test_component_builder_derives_encoder_teacher_reference_without_mutating_config():
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    config["data"].update({"lq_size": [128, 192], "gt_size": [256, 320]})
+    config["components"]["student_encoder"] = _private_encoder_component()
+
+    components = build_components(config)
+
+    bridge = components["student_encoder"].module
+    assert isinstance(bridge, PrivateEncoderBridge)
+    assert bridge.teacher_reference == {
+        "role": "encoder",
+        "inputs": {
+            "rgb": {
+                "layout": "BCHW",
+                "shape": [None, 3, 256, 320],
+                "source": "gt",
+            }
+        },
+        "outputs": {
+            "latent": {
+                "layout": "BCHW",
+                "shape": [None, 16, 32, 40],
+            }
+        },
+    }
+    assert "teacher_reference" not in config["components"]["student_encoder"]["kwargs"]
+
+
+def test_component_builder_derives_conditional_decoder_teacher_reference():
+    config = load_config("configs/smoke/flashvsr_decoder_conditional.yaml")
+    config["data"].update({"lq_size": [128, 192], "gt_size": [256, 320]})
+    config["components"]["conditional_student_decoder"] = (
+        _private_conditional_decoder_component()
+    )
+
+    components = build_components(config)
+
+    bridge = components["conditional_student_decoder"].module
+    assert isinstance(bridge, PrivateConditionalDecoderBridge)
+    assert bridge.teacher_reference == {
+        "role": "conditional_decoder",
+        "inputs": {
+            "lq_rgb": {
+                "layout": "BCHW",
+                "shape": [None, 3, 256, 320],
+                "source": "teacher_condition",
+            },
+            "dit_latent": {
+                "layout": "BCHW",
+                "shape": [None, 16, 32, 40],
+            },
+        },
+        "outputs": {
+            "rgb": {
+                "layout": "BCHW",
+                "shape": [None, 3, 256, 320],
+            }
+        },
+    }
+
+
+def test_component_builder_derives_bcthw_teacher_latent_reference():
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    config["data"]["gt_size"] = [256, 320]
+    config["latent_spec"].update({"layout": "BCTHW", "temporal_downsample": 2})
+    config["components"]["student_encoder"] = _private_encoder_component()
+
+    components = build_components(config)
+
+    bridge = components["student_encoder"].module
+    assert bridge.teacher_reference["outputs"]["latent"] == {
+        "layout": "BCTHW",
+        "shape": [None, 16, 2, 32, 40],
+    }
+
+
+def test_component_builder_does_not_inject_teacher_reference_without_opt_in():
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    config["components"]["student_encoder"] = {
+        "backend": "external",
+        "factory": "tests.support_factories:create_encoder",
+        "kwargs": {"channels": 16},
+        "adapter": {"kind": "encoder", "input_mode": "packed_6ch"},
+    }
+
+    components = build_components(config)
+
+    assert components["student_encoder"].module.net[-1].out_channels == 16
+
+
+def test_component_builder_rejects_automatic_and_explicit_teacher_reference():
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    component = _private_encoder_component()
+    component["kwargs"]["teacher_reference"] = {"role": "explicit"}
+    config["components"]["student_encoder"] = component
+
+    with pytest.raises(ContractError, match="student_encoder.*teacher_reference.*both"):
+        build_components(config)
+
+
+@pytest.mark.parametrize("size", (None, [256], [256, 0], [256, "320"]))
+def test_component_builder_rejects_invalid_teacher_reference_image_size(size):
+    config = load_config("configs/smoke/wan_encoder.yaml")
+    config["components"]["student_encoder"] = _private_encoder_component()
+    if size is None:
+        config["data"].pop("gt_size")
+    else:
+        config["data"]["gt_size"] = size
+
+    with pytest.raises(ContractError, match=r"data\.gt_size.*height.*width"):
         build_components(config)
 
 

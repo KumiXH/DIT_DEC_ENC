@@ -240,6 +240,174 @@ def _build_module(name: str, values: Mapping[str, Any]) -> nn.Module:
     return module
 
 
+def _reference_image_size(config: Mapping[str, Any], source: str) -> tuple[int, int]:
+    key = f"{source}_size"
+    data = config.get("data", {})
+    value = data.get(key) if isinstance(data, Mapping) else None
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 2
+        or any(type(size) is not int or size <= 0 for size in value)
+    ):
+        raise ContractError(
+            f"data.{key} must contain positive integer height and width for teacher_reference"
+        )
+    return int(value[0]), int(value[1])
+
+
+def _teacher_temporal_frames(config: Mapping[str, Any]) -> int:
+    components = config.get("components", {})
+    if not isinstance(components, Mapping):
+        return 1
+    teacher_encoder = components.get("teacher_encoder", {})
+    if not isinstance(teacher_encoder, Mapping):
+        return 1
+    adapter = teacher_encoder.get("adapter", {})
+    if not isinstance(adapter, Mapping):
+        return 1
+    value = adapter.get("temporal_frames", 1)
+    if type(value) is not int or value <= 0:
+        raise ContractError(
+            "components.teacher_encoder.adapter.temporal_frames must be a positive integer "
+            "for teacher_reference"
+        )
+    return value
+
+
+def _reference_latent_shape(
+    latent_spec: LatentSpec,
+    *,
+    image_size: tuple[int, int],
+    temporal_frames: int,
+) -> list[int | None]:
+    height, width = image_size
+    spatial = [
+        height // latent_spec.spatial_downsample,
+        width // latent_spec.spatial_downsample,
+    ]
+    if latent_spec.layout == "BCHW":
+        return [None, latent_spec.channels, *spatial]
+    temporal = (
+        temporal_frames + latent_spec.temporal_downsample - 1
+    ) // latent_spec.temporal_downsample
+    return [None, latent_spec.channels, temporal, *spatial]
+
+
+def _teacher_reference(
+    config: Mapping[str, Any],
+    *,
+    name: str,
+    values: Mapping[str, Any],
+    latent_spec: LatentSpec,
+) -> dict[str, Any]:
+    adapter = values.get("adapter", {})
+    if not isinstance(adapter, Mapping):
+        raise ContractError(
+            f"component {name!r} adapter must be a mapping for teacher_reference"
+        )
+    kind = adapter.get("kind")
+    temporal_frames = _teacher_temporal_frames(config)
+    if kind == "encoder":
+        recipe = config.get("recipe", {})
+        source = recipe.get("source", "gt") if isinstance(recipe, Mapping) else "gt"
+        if source not in {"lq", "gt"}:
+            raise ContractError(
+                f"component {name!r} teacher_reference encoder source must be lq or gt"
+            )
+        image_size = _reference_image_size(config, source)
+        return {
+            "role": "encoder",
+            "inputs": {
+                "rgb": {
+                    "layout": "BCHW",
+                    "shape": [None, 3, *image_size],
+                    "source": source,
+                }
+            },
+            "outputs": {
+                "latent": {
+                    "layout": latent_spec.layout,
+                    "shape": _reference_latent_shape(
+                        latent_spec,
+                        image_size=image_size,
+                        temporal_frames=temporal_frames,
+                    ),
+                }
+            },
+        }
+    if kind == "decoder" and adapter.get("accepts_condition", False):
+        provider = config.get("latent_provider", {})
+        latent_source = (
+            provider.get("source", "gt") if isinstance(provider, Mapping) else "gt"
+        )
+        if latent_source not in {"lq", "gt"}:
+            raise ContractError(
+                f"component {name!r} teacher_reference latent source must be lq or gt"
+            )
+        teacher_size = _reference_image_size(config, "gt")
+        latent_size = _reference_image_size(config, latent_source)
+        return {
+            "role": "conditional_decoder",
+            "inputs": {
+                "lq_rgb": {
+                    "layout": "BCHW",
+                    "shape": [None, 3, *teacher_size],
+                    "source": "teacher_condition",
+                },
+                "dit_latent": {
+                    "layout": latent_spec.layout,
+                    "shape": _reference_latent_shape(
+                        latent_spec,
+                        image_size=latent_size,
+                        temporal_frames=temporal_frames,
+                    ),
+                },
+            },
+            "outputs": {
+                "rgb": {
+                    "layout": "BCHW",
+                    "shape": [None, 3, *teacher_size],
+                }
+            },
+        }
+    raise ContractError(
+        f"component {name!r} teacher_reference=auto supports encoder or conditional decoder adapters"
+    )
+
+
+def _component_build_values(
+    config: Mapping[str, Any],
+    *,
+    name: str,
+    values: Mapping[str, Any],
+    latent_spec: LatentSpec,
+) -> Mapping[str, Any]:
+    reference_mode = values.get("teacher_reference")
+    if reference_mode is None:
+        return values
+    if reference_mode != "auto":
+        raise ContractError(
+            f"component {name!r} teacher_reference must be 'auto', got {reference_mode!r}"
+        )
+    raw_kwargs = values.get("kwargs", {})
+    if not isinstance(raw_kwargs, Mapping):
+        raise ContractError(f"component {name!r} kwargs must be a mapping")
+    if "teacher_reference" in raw_kwargs:
+        raise ContractError(
+            f"component {name!r} cannot define teacher_reference both automatically and in kwargs"
+        )
+    build_values = dict(values)
+    kwargs = dict(raw_kwargs)
+    kwargs["teacher_reference"] = _teacher_reference(
+        config,
+        name=name,
+        values=values,
+        latent_spec=latent_spec,
+    )
+    build_values["kwargs"] = kwargs
+    return build_values
+
+
 def build_components(config: Mapping[str, Any]) -> dict[str, nn.Module]:
     if "latent_spec" not in config:
         raise ContractError("config requires latent_spec")
@@ -260,7 +428,15 @@ def build_components(config: Mapping[str, Any]) -> dict[str, nn.Module]:
     for name, values in config.get("components", {}).items():
         if name not in required:
             continue
-        module = _build_module(name, values)
+        module = _build_module(
+            name,
+            _component_build_values(
+                config,
+                name=name,
+                values=values,
+                latent_spec=latent_spec,
+            ),
+        )
         adapter = values.get("adapter", {})
         kind = adapter.get("kind")
         if kind == "encoder":
