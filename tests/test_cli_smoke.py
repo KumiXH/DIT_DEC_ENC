@@ -6,6 +6,7 @@ import pytest
 
 from distill_codec.cli import main
 from distill_codec.contracts import ContractError
+from distill_codec.data import create_mock_dataset
 
 
 def test_powershell_smoke_runner_parses():
@@ -112,6 +113,43 @@ def test_cli_probe_conditional_and_lq_proj_recipes(tmp_path):
             ]
         )
         assert code == 0
+
+
+def test_cli_probe_center_crops_oversized_pairs(tmp_path, capsys):
+    paths = create_mock_dataset(tmp_path / "data", count=2, size=(40, 40))
+
+    assert (
+        main(
+            [
+                "probe",
+                "--config",
+                "configs/smoke/flashvsr_lq_proj.yaml",
+                "--set",
+                f"data.lq_root={paths.lq_root}",
+                "--set",
+                f"data.gt_root={paths.gt_root}",
+                "--set",
+                "data.lq_size=['32','32']",
+                "--set",
+                "data.gt_size=['32','32']",
+                "--set",
+                "data.augmentation.enabled=true",
+                "--set",
+                "data.augmentation.shared_across_batch=true",
+                "--set",
+                "data.augmentation.crop.enabled=true",
+                "--set",
+                "data.augmentation.crop.mode=random",
+                "--set",
+                "trainer.device=cpu",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+    assert result["preflight"]["lq_sizes"] == [[40, 40]]
+    assert result["images"]["lq"] == [2, 3, 32, 32]
 
 
 def test_cli_probe_rejects_dataset_latent_provider_without_custom_dataset(tmp_path):

@@ -197,6 +197,33 @@ def test_resume_rejects_changed_optimizer(tmp_path):
         _make_trainer(incompatible).fit(resume=checkpoint)
 
 
+def test_resume_rejects_changed_augmentation_contract(tmp_path):
+    config = _training_config(tmp_path, max_steps=1)
+    config["data"]["augmentation"] = {
+        "enabled": True,
+        "shared_across_batch": True,
+        "crop": {"enabled": True, "mode": "random"},
+        "rotation": {"enabled": False},
+        "translation": {"enabled": False},
+    }
+    checkpoint = _make_trainer(config).fit().latest_checkpoint
+    incompatible = deepcopy(config)
+    incompatible["trainer"]["max_steps"] = 2
+    incompatible["data"]["augmentation"]["rotation"] = {
+        "enabled": True,
+        "mode": "continuous",
+        "probability": 0.3,
+        "degrees": [-5.0, 5.0],
+        "interpolation": "bilinear",
+        "padding_mode": "reflection",
+    }
+
+    with pytest.raises(
+        ValueError, match="incompatible training contract.*augmentation"
+    ):
+        _make_trainer(incompatible).fit(resume=checkpoint)
+
+
 @pytest.mark.parametrize(
     ("path", "value", "field"),
     (
@@ -341,6 +368,72 @@ def test_resume_matches_uninterrupted_training_data_order_and_parameters(tmp_pat
     resumed_payload = torch.load(resumed.latest_checkpoint, map_location="cpu", weights_only=False)
 
     assert resumed_payload["data_batches_consumed"] == 8
+    for component, state in uninterrupted_payload["student_state"].items():
+        for name, value in state.items():
+            assert torch.equal(value, resumed_payload["student_state"][component][name])
+
+
+def test_resume_matches_uninterrupted_with_paired_augmentation(tmp_path):
+    paths = create_mock_dataset(tmp_path / "data", count=4, size=(40, 40), seed=5)
+
+    def config_for(output_dir: Path, max_steps: int):
+        config = load_config("configs/smoke/wan_encoder.yaml")
+        config["data"].update(
+            {
+                "lq_root": str(paths.lq_root),
+                "gt_root": str(paths.gt_root),
+                "lq_size": [32, 32],
+                "gt_size": [32, 32],
+                "augmentation": {
+                    "enabled": True,
+                    "shared_across_batch": True,
+                    "crop": {"enabled": True, "mode": "random"},
+                    "rotation": {
+                        "enabled": True,
+                        "mode": "continuous",
+                        "probability": 1.0,
+                        "degrees": [-5.0, 5.0],
+                        "interpolation": "bilinear",
+                        "padding_mode": "reflection",
+                    },
+                    "translation": {
+                        "enabled": True,
+                        "probability": 1.0,
+                        "max_fraction": [0.05, 0.05],
+                        "padding_mode": "reflection",
+                    },
+                },
+            }
+        )
+        config["run"]["output_dir"] = str(output_dir)
+        config["trainer"].update(
+            {
+                "max_steps": max_steps,
+                "batch_size": 2,
+                "gradient_accumulation": 2,
+                "validate_every": max_steps,
+                "checkpoint_every": max_steps,
+                "tensorboard": False,
+            }
+        )
+        return config
+
+    uninterrupted = _make_trainer(config_for(tmp_path / "uninterrupted", 4)).fit()
+    uninterrupted_payload = torch.load(
+        uninterrupted.latest_checkpoint, map_location="cpu", weights_only=False
+    )
+
+    staged_config = config_for(tmp_path / "staged", 2)
+    first_stage = _make_trainer(staged_config).fit()
+    resumed_config = deepcopy(staged_config)
+    resumed_config["trainer"].update(
+        {"max_steps": 4, "validate_every": 4, "checkpoint_every": 4}
+    )
+    resumed = _make_trainer(resumed_config).fit(resume=first_stage.latest_checkpoint)
+    resumed_payload = torch.load(
+        resumed.latest_checkpoint, map_location="cpu", weights_only=False
+    )
+
     for component, state in uninterrupted_payload["student_state"].items():
         for name, value in state.items():
             assert torch.equal(value, resumed_payload["student_state"][component][name])

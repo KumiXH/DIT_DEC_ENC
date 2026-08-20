@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence, cast
+from typing import TYPE_CHECKING, Mapping, Sequence, cast
 
 import torch
 import torch.nn.functional as F
@@ -11,6 +11,9 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 from .contracts import ContractError, DistillBatch
+
+if TYPE_CHECKING:
+    from .augmentation import PairedAugmentation
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
@@ -22,6 +25,13 @@ class DatasetPreflightReport:
     relative_paths: tuple[str, ...]
     lq_sizes: tuple[tuple[int, int], ...]
     gt_sizes: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
+class RawPairedBatch:
+    lq_rgb: tuple[Tensor, ...]
+    gt_rgb: tuple[Tensor, ...]
+    relative_path: tuple[str, ...]
 
 
 def _normalized_relative(path: Path, root: Path) -> str:
@@ -62,11 +72,13 @@ class PairedImageDataset(Dataset[dict[str, object]]):
         *,
         lq_size: tuple[int, int] | None = None,
         gt_size: tuple[int, int] | None = None,
+        augmentation: "PairedAugmentation | None" = None,
     ) -> None:
         self.lq_root = Path(lq_root)
         self.gt_root = Path(gt_root)
         self.lq_size = lq_size
         self.gt_size = gt_size
+        self.augmentation = augmentation
         lq_files = _scan_images(self.lq_root)
         gt_files = _scan_images(self.gt_root)
         only_lq = sorted(set(lq_files) - set(gt_files))
@@ -94,8 +106,7 @@ class PairedImageDataset(Dataset[dict[str, object]]):
         relative, lq_path, gt_path = self._pairs[index]
         lq = _load_rgb(lq_path)
         gt = _load_rgb(gt_path)
-        self._validate_size(relative, "LQ", lq, self.lq_size)
-        self._validate_size(relative, "GT", gt, self.gt_size)
+        self._validate_pair(relative, lq, gt)
         return {"lq_rgb": lq, "gt_rgb": gt, "relative_path": relative}
 
     def _preflight(self) -> DatasetPreflightReport:
@@ -105,8 +116,7 @@ class PairedImageDataset(Dataset[dict[str, object]]):
         for relative, lq_path, gt_path in self._pairs:
             lq = _load_rgb(lq_path)
             gt = _load_rgb(gt_path)
-            self._validate_size(relative, "LQ", lq, self.lq_size)
-            self._validate_size(relative, "GT", gt, self.gt_size)
+            self._validate_pair(relative, lq, gt)
             lq_sizes.add((int(lq.shape[-2]), int(lq.shape[-1])))
             gt_size = (int(gt.shape[-2]), int(gt.shape[-1]))
             gt_sizes.add(gt_size)
@@ -117,6 +127,41 @@ class PairedImageDataset(Dataset[dict[str, object]]):
             lq_sizes=tuple(sorted(lq_sizes)),
             gt_sizes=tuple(sorted(gt_sizes)),
         )
+
+    def _validate_pair(self, relative: str, lq: Tensor, gt: Tensor) -> None:
+        crop_enabled = bool(
+            self.augmentation is not None
+            and self.augmentation.enabled
+            and self.augmentation.crop.enabled
+        )
+        if crop_enabled:
+            if tuple(lq.shape[-2:]) != tuple(gt.shape[-2:]):
+                raise ContractError(
+                    f"{relative}: paired augmentation requires equal LQ/GT source sizes, "
+                    f"got LQ={tuple(lq.shape[-2:])}, GT={tuple(gt.shape[-2:])}"
+                )
+            assert self.lq_size is not None and self.gt_size is not None
+            self._validate_minimum_size(relative, "LQ", lq, self.lq_size)
+            self._validate_minimum_size(relative, "GT", gt, self.gt_size)
+            return
+        self._validate_size(relative, "LQ", lq, self.lq_size)
+        self._validate_size(relative, "GT", gt, self.gt_size)
+
+    @staticmethod
+    def _validate_minimum_size(
+        relative: str,
+        kind: str,
+        tensor: Tensor,
+        expected: tuple[int, int],
+    ) -> None:
+        actual = tuple(int(size) for size in tensor.shape[-2:])
+        if any(
+            actual_size < target_size
+            for actual_size, target_size in zip(actual, expected, strict=True)
+        ):
+            raise ContractError(
+                f"{relative}: expected {kind} size to be at least {tuple(expected)}, got {actual}"
+            )
 
     @staticmethod
     def _validate_size(
@@ -146,6 +191,16 @@ def collate_distill_batch(samples: Sequence[Mapping[str, object]]) -> DistillBat
             if all(has_latent)
             else None
         ),
+    )
+
+
+def collate_raw_paired_batch(samples: Sequence[Mapping[str, object]]) -> RawPairedBatch:
+    if not samples:
+        raise ContractError("cannot collate an empty sample list")
+    return RawPairedBatch(
+        lq_rgb=tuple(cast(Tensor, sample["lq_rgb"]) for sample in samples),
+        gt_rgb=tuple(cast(Tensor, sample["gt_rgb"]) for sample in samples),
+        relative_path=tuple(str(sample["relative_path"]) for sample in samples),
     )
 
 

@@ -7,9 +7,10 @@ from typing import Sequence
 
 import torch
 
+from .augmentation import collate_augmented_batch, paired_augmentation_from_config
 from .config import apply_overrides, build_components, load_config, preflight_config
 from .contracts import ContractError
-from .data import PairedImageDataset, collate_distill_batch, create_mock_dataset
+from .data import PairedImageDataset, collate_raw_paired_batch, create_mock_dataset
 from .latents import CachedLatentProvider
 from .recipes import build_recipe
 from .trainer import Trainer
@@ -64,11 +65,19 @@ def _probe(config_path: str, overrides: list[str]) -> int:
         raise RuntimeError("probe requested CUDA but torch.cuda.is_available() is false")
     recipe.to(device)
     data = config["data"]
+    augmentation = paired_augmentation_from_config(config)
+    lq_size = augmentation.target_size or (
+        tuple(data["lq_size"]) if data.get("lq_size") else None
+    )
+    gt_size = augmentation.target_size or (
+        tuple(data["gt_size"]) if data.get("gt_size") else None
+    )
     dataset = PairedImageDataset(
         data["lq_root"],
         data["gt_root"],
-        lq_size=tuple(data["lq_size"]) if data.get("lq_size") else None,
-        gt_size=tuple(data["gt_size"]) if data.get("gt_size") else None,
+        lq_size=lq_size,
+        gt_size=gt_size,
+        augmentation=augmentation,
     )
     latent_provider = (
         recipe.components["latent_provider"]
@@ -78,7 +87,14 @@ def _probe(config_path: str, overrides: list[str]) -> int:
     if isinstance(latent_provider, CachedLatentProvider):
         latent_provider.preflight(dataset.gt_sizes_by_relative)
     batch_size = min(int(config.get("trainer", {}).get("batch_size", 1)), len(dataset))
-    batch = collate_distill_batch([dataset[index] for index in range(batch_size)]).to(device)
+    raw_batch = collate_raw_paired_batch([dataset[index] for index in range(batch_size)])
+    batch = collate_augmented_batch(
+        raw_batch,
+        augmentation,
+        phase="probe",
+        seed=int(config.get("run", {}).get("seed", 0)),
+        device=device,
+    )
     output = recipe(batch)
     result = {
         "recipe": recipe.name,

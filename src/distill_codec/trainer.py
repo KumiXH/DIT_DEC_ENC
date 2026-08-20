@@ -9,10 +9,11 @@ from typing import Any, Iterator, Mapping
 import torch
 from torch.utils.data import DataLoader
 
+from .augmentation import collate_augmented_batch, paired_augmentation_from_config
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import preflight_config
-from .contracts import ContractError, DistillBatch
-from .data import PairedImageDataset, collate_distill_batch
+from .contracts import ContractError
+from .data import PairedImageDataset, RawPairedBatch, collate_raw_paired_batch
 from .latents import CachedLatentProvider
 from .metrics import save_validation_grid
 from .recipes import DistillationRecipe, RecipeOutput
@@ -63,6 +64,7 @@ class Trainer:
             )
         self.config = dict(config)
         self.recipe = recipe
+        self.augmentation = paired_augmentation_from_config(config)
         run_config = config.get("run", {})
         trainer_config = config.get("trainer", {})
         self.output_dir = Path(run_config.get("output_dir", "runs/default"))
@@ -145,11 +147,19 @@ class Trainer:
     @staticmethod
     def _build_loaders(config: Mapping[str, Any]) -> tuple[DataLoader, DataLoader]:
         data_config = config["data"]
+        augmentation = paired_augmentation_from_config(config)
+        lq_size = augmentation.target_size or (
+            tuple(data_config["lq_size"]) if data_config.get("lq_size") else None
+        )
+        gt_size = augmentation.target_size or (
+            tuple(data_config["gt_size"]) if data_config.get("gt_size") else None
+        )
         dataset = PairedImageDataset(
             data_config["lq_root"],
             data_config["gt_root"],
-            lq_size=tuple(data_config["lq_size"]) if data_config.get("lq_size") else None,
-            gt_size=tuple(data_config["gt_size"]) if data_config.get("gt_size") else None,
+            lq_size=lq_size,
+            gt_size=gt_size,
+            augmentation=augmentation,
         )
         trainer_config = config.get("trainer", {})
         batch_size = int(trainer_config.get("batch_size", 1))
@@ -161,14 +171,14 @@ class Trainer:
             shuffle=True,
             generator=generator,
             num_workers=num_workers,
-            collate_fn=collate_distill_batch,
+            collate_fn=collate_raw_paired_batch,
         )
         validation = DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_distill_batch,
+            collate_fn=collate_raw_paired_batch,
         )
         return train, validation
 
@@ -199,7 +209,7 @@ class Trainer:
             if step > global_step:
                 path.unlink()
 
-    def _infinite_batches(self) -> Iterator[tuple[int, DistillBatch]]:
+    def _infinite_batches(self) -> Iterator[tuple[int, RawPairedBatch]]:
         epoch = 0
         while True:
             for batch in self.train_loader:
@@ -244,8 +254,16 @@ class Trainer:
             self._set_training_modes()
             accumulated_output: RecipeOutput | None = None
             for micro_step in range(accumulation):
-                epoch, batch = next(batches)
-                batch = batch.to(self.device)
+                epoch, raw_batch = next(batches)
+                batch = collate_augmented_batch(
+                    raw_batch,
+                    self.augmentation,
+                    phase="train",
+                    seed=self.seed,
+                    global_step=global_step + 1,
+                    micro_step=micro_step,
+                    device=self.device,
+                )
                 with torch.autocast(
                     device_type=self.device.type,
                     enabled=self.amp_enabled,
@@ -298,7 +316,15 @@ class Trainer:
     @torch.no_grad()
     def validate(self, global_step: int) -> dict[str, float]:
         self.recipe.eval()
-        batch = next(iter(self.validation_loader)).to(self.device)
+        raw_batch = next(iter(self.validation_loader))
+        batch = collate_augmented_batch(
+            raw_batch,
+            self.augmentation,
+            phase="validation",
+            seed=self.seed,
+            global_step=global_step,
+            device=self.device,
+        )
         output = self.recipe(batch, global_step=global_step)
         self._log_output("validation", global_step, output)
         if output.images:

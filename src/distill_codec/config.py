@@ -8,6 +8,7 @@ from typing import Any, Mapping, MutableMapping
 import yaml
 from torch import nn
 
+from .augmentation import paired_augmentation_from_config
 from .adapters import ConditionEncoderAdapter, DecoderAdapter, EncoderAdapter, freeze_module
 from .contracts import ColorSpec, ConditionSpec, ContractError, LatentSpec
 from .factories import build_from_factory
@@ -120,6 +121,12 @@ def preflight_config(config: Mapping[str, Any]) -> None:
             )
     if isinstance(provider, Mapping) and provider.get("type") == "cached" and not provider.get("root"):
         raise ContractError(f"config requires latent_provider.root; config={location}")
+    try:
+        paired_augmentation_from_config(config)
+    except ContractError as error:
+        raise ContractError(
+            f"invalid paired augmentation: {error}; config={location}"
+        ) from error
 
 
 def _resolve_paths(value: Any, base_dir: Path, key: str | None = None) -> Any:

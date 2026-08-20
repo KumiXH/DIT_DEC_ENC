@@ -74,6 +74,8 @@ def test_readme_documents_complete_ubuntu_workflow():
         '--resume "$HOME/dit_codec/runs/',
         "curl --fail --location --retry 5",
         "sha256sum -c SHA256SUMS",
+        "shared_across_batch: true",
+        "validation 和 `probe`",
     ):
         assert marker in readme
 

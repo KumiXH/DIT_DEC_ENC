@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from .contracts import ColorSpec, ConditionSpec, LatentSpec
+from .augmentation import paired_augmentation_from_config
 
 
 def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -38,6 +39,7 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
         "recipe_source": str(recipe.get("source", "gt")),
         "recipe_weights": dict(recipe.get("weights", {})),
         "compatibility_every": int(recipe.get("compatibility_every", 1)),
+        "augmentation": paired_augmentation_from_config(config).to_dict(),
     }
 
 

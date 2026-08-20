@@ -249,6 +249,22 @@ data:
   gt_root: ~/dit_codec/GT
   lq_size: [256, 256]
   gt_size: [256, 256]
+  augmentation:
+    enabled: true
+    shared_across_batch: true
+    crop: {enabled: true, mode: random}
+    rotation:
+      enabled: true
+      mode: continuous
+      probability: 0.3
+      degrees: [-5.0, 5.0]
+      interpolation: bilinear
+      padding_mode: reflection
+    translation:
+      enabled: true
+      probability: 0.3
+      max_fraction: [0.05, 0.05]
+      padding_mode: reflection
 
 trainer:
   device: cuda
@@ -308,6 +324,22 @@ data:
   gt_root: ~/dit_codec/GT
   lq_size: [256, 256]
   gt_size: [256, 256]
+  augmentation:
+    enabled: true
+    shared_across_batch: true
+    crop: {enabled: true, mode: random}
+    rotation:
+      enabled: true
+      mode: continuous
+      probability: 0.3
+      degrees: [-5.0, 5.0]
+      interpolation: bilinear
+      padding_mode: reflection
+    translation:
+      enabled: true
+      probability: 0.3
+      max_fraction: [0.05, 0.05]
+      padding_mode: reflection
 
 trainer:
   device: cuda
@@ -490,7 +522,27 @@ data:
   gt_root: ~/dit_codec/GT
   lq_size: [256, 256]
   gt_size: [256, 256]
+  augmentation:
+    enabled: true
+    shared_across_batch: true
+    crop: {enabled: true, mode: random}
+    rotation:
+      enabled: true
+      mode: continuous
+      probability: 0.3
+      degrees: [-5.0, 5.0]
+      interpolation: bilinear
+      padding_mode: reflection
+    translation:
+      enabled: true
+      probability: 0.3
+      max_fraction: [0.05, 0.05]
+      padding_mode: reflection
 ```
+
+启用上述配置后，`lq_size`/`gt_size` 是输出 patch 尺寸。每对 LQ/GT 源图必须同尺寸；任一边小于目标尺寸会报错，大于目标尺寸会随机裁切。裁切、连续旋转和平移对 LQ/GT 完全同步，并且一个 batch 共用一组参数。训练阶段随机增强，validation 和 `probe` 只做确定性的 center crop，不旋转、不平移。
+
+当前版本要求 `shared_across_batch: true`，且增强不能与 `latent_provider.type: cached` 或 `dataset` 同时使用。augmentation 配置会写入 checkpoint 训练契约，恢复训练时必须保持一致。
 
 启动时会检查缺失文件、不可解码图像和配置尺寸。框架不在线合成退化 LQ。
 `distill-codec probe` 的 JSON 输出包含 `preflight`、loss 和输出 shape。使用真实配置时，CLI 会先加载所需组件和权重，然后创建数据集并报告配对数量、相对路径和实际 LQ/GT 尺寸集合；只想提前检查数据时，请使用上面的 Mock 配置命令。

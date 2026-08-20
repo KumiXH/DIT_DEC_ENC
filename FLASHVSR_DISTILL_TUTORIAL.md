@@ -194,7 +194,7 @@ lq_size: [256, 256]
 gt_size: [256, 256]
 ```
 
-如果你的原生 LQ 尺寸小于 GT，可以分别填写真实尺寸。FlashVSR recipe 会在送入 `LQ_proj_in` 或 `TCDecoder` 前，用 bicubic 把 LQ 对齐到 GT 尺寸。数据集不会替你随机生成退化 LQ。
+启用本教程后面的配对增强时，这两个值表示裁切后的训练 patch 尺寸，不再要求源图严格等于 `256x256`。每对 LQ/GT 源图必须同尺寸：任一边小于目标尺寸会立即报错，大于目标尺寸会在训练时随机裁切。数据集不会替你随机生成退化 LQ。
 
 先用 mock 模型检查真实数据目录：
 
@@ -205,10 +205,14 @@ python -m distill_codec.cli probe \
   --set "data.gt_root=$HOME/dit_codec/GT" \
   --set "data.lq_size=[256,256]" \
   --set "data.gt_size=[256,256]" \
+  --set "data.augmentation.enabled=true" \
+  --set "data.augmentation.shared_across_batch=true" \
+  --set "data.augmentation.crop.enabled=true" \
+  --set "data.augmentation.crop.mode=random" \
   --set "trainer.device=cpu"
 ```
 
-如何判断成功：输出 JSON 的 `preflight.pair_count` 等于你的图片对数，`lq_sizes` 和 `gt_sizes` 与 YAML 一致。
+如何判断成功：输出 JSON 的 `preflight.pair_count` 等于你的图片对数；`lq_sizes` 和 `gt_sizes` 显示源图实际尺寸，输出 image shape 则是裁切后的 `[B,3,256,256]`。`probe` 固定使用 center crop，不会随机旋转或平移。
 
 ## 📦 第 3 步：准备教师权重
 
@@ -422,6 +426,24 @@ data:
   gt_root: ~/dit_codec/GT
   lq_size: [256, 256]
   gt_size: [256, 256]
+  augmentation:
+    enabled: true
+    shared_across_batch: true
+    crop:
+      enabled: true
+      mode: random
+    rotation:
+      enabled: true
+      mode: continuous
+      probability: 0.3
+      degrees: [-5.0, 5.0]
+      interpolation: bilinear
+      padding_mode: reflection
+    translation:
+      enabled: true
+      probability: 0.3
+      max_fraction: [0.05, 0.05]
+      padding_mode: reflection
 
 trainer:
   device: cuda
@@ -611,6 +633,24 @@ data:
   gt_root: ~/dit_codec/GT
   lq_size: [256, 256]
   gt_size: [256, 256]
+  augmentation:
+    enabled: true
+    shared_across_batch: true
+    crop:
+      enabled: true
+      mode: random
+    rotation:
+      enabled: true
+      mode: continuous
+      probability: 0.3
+      degrees: [-5.0, 5.0]
+      interpolation: bilinear
+      padding_mode: reflection
+    translation:
+      enabled: true
+      probability: 0.3
+      max_fraction: [0.05, 0.05]
+      padding_mode: reflection
 
 trainer:
   device: cuda
@@ -972,10 +1012,33 @@ PY
 | --- | --- |
 | `lq_root` | LQ 图片根目录 |
 | `gt_root` | GT 图片根目录 |
-| `lq_size` | 每张 LQ 的严格 `[H,W]` 检查；不设置则允许任意尺寸 |
-| `gt_size` | 每张 GT 的严格 `[H,W]` 检查；不设置则允许任意尺寸 |
+| `lq_size` | 启用 crop 时是 LQ 输出 patch 的 `[H,W]`；否则是严格尺寸检查 |
+| `gt_size` | 启用 crop 时是 GT 输出 patch 的 `[H,W]`；否则是严格尺寸检查 |
 
-启动时会扫描整个目录，检查可解码性、相对路径配对和所有图片尺寸。因此超大数据集的启动预检本身也需要时间。
+启用配对增强时，`lq_size` 和 `gt_size` 必须相等，每对 LQ/GT 源图尺寸也必须相等。源图任一边小于目标 patch 会报错；更大的源图允许进入训练并随机裁切。启动时会扫描整个目录，检查可解码性、相对路径配对和所有图片尺寸。因此超大数据集的启动预检本身也需要时间。
+
+### `data.augmentation`
+
+| 参数 | 含义 |
+| --- | --- |
+| `enabled` | 配对几何增强总开关；`false` 时恢复严格尺寸检查 |
+| `shared_across_batch` | 当前版本必须为 `true`，同一 batch 共用一组增强参数 |
+| `crop.enabled` | 允许大图裁成 `lq_size`/`gt_size` |
+| `crop.mode` | 训练配置写 `random`；validation 和 probe 自动使用确定性的 center crop |
+| `rotation.enabled` | 是否启用随机旋转 |
+| `rotation.mode` | `continuous` 为连续角度；`right_angle` 为 90 度倍数且要求方形 patch |
+| `rotation.probability` | 每个训练 batch 执行旋转的概率 |
+| `rotation.degrees` | 连续旋转角度范围，推荐起点 `[-5.0, 5.0]` |
+| `rotation.interpolation` | `bilinear` 或 `nearest` |
+| `rotation.padding_mode` | `reflection`、`border` 或 `zeros` |
+| `translation.enabled` | 是否启用随机平移 |
+| `translation.probability` | 每个训练 batch 执行平移的概率 |
+| `translation.max_fraction` | 垂直、水平最大平移占图像尺寸的比例，例如 `[0.05, 0.05]` |
+| `translation.padding_mode` | 必须与同时启用的 rotation padding mode 一致 |
+
+裁切、旋转和平移对 LQ/GT 使用完全相同的参数，并且一个 batch 共用一组参数。只有训练阶段随机采样；validation 和 `probe` 固定 center crop，且不做旋转和平移。随机参数由 `run.seed`、训练 phase、global step 和 micro-step 决定，所以 checkpoint 恢复后能继续相同的数据增强序列。
+
+几何增强不能与 `latent_provider.type: cached` 或 `dataset` 同时使用，因为缓存 latent 无法随当前 batch 的随机几何变换同步变化。恢复训练时，augmentation 配置属于训练契约；不要改动开关、角度、概率、平移范围或 padding mode。
 
 ### `trainer`
 

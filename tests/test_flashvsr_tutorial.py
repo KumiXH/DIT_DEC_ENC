@@ -40,10 +40,45 @@ def test_tutorial_documents_stepwise_training_and_artifacts():
         "student_state",
         "预期输出",
         "如何判断成功",
+        "shared_across_batch",
+        "validation 和 probe",
+        "center crop",
+        "cached",
     ):
         assert marker in tutorial
     assert "PowerShell" not in tutorial
     assert "C:\\" not in tutorial
+
+
+def test_tutorial_real_yaml_examples_enable_paired_augmentation():
+    tutorial = TUTORIAL.read_text(encoding="utf-8")
+
+    for heading in (
+        "### `configs/local/flashvsr_lq_proj.yaml`",
+        "### `configs/local/flashvsr_tcdecoder.yaml`",
+    ):
+        config = _yaml_after_heading(tutorial, heading)
+        augmentation = config["data"]["augmentation"]
+
+        assert augmentation == {
+            "enabled": True,
+            "shared_across_batch": True,
+            "crop": {"enabled": True, "mode": "random"},
+            "rotation": {
+                "enabled": True,
+                "mode": "continuous",
+                "probability": 0.3,
+                "degrees": [-5.0, 5.0],
+                "interpolation": "bilinear",
+                "padding_mode": "reflection",
+            },
+            "translation": {
+                "enabled": True,
+                "probability": 0.3,
+                "max_fraction": [0.05, 0.05],
+                "padding_mode": "reflection",
+            },
+        }
 
 
 def test_tutorial_real_yaml_examples_preflight(tmp_path):
