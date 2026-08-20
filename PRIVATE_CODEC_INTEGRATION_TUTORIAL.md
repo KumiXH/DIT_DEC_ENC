@@ -49,19 +49,27 @@ src/private_codec/versions/v0/entrypoints.py
 
 公共基础设施不属于任何网络版本。增加 v1、v2 时，不要修改 `src/private_codec/bridge.py`，也不要修改 `src/private_codec/factories.py`。
 
-## 第 1 步：确认使用哪个 Python
+## 第 1 步：准备 Linux Python 环境
 
-当前机器的 Conda base 环境存在，但 `python` 和 `conda` 不一定在 PowerShell 的 `PATH`。在仓库根目录执行：
+以下命令以 Ubuntu/Bash 为准。先进入仓库根目录，创建独立虚拟环境并安装项目：
 
-```powershell
-$CodecConda = 'C:\Users\xh932\anaconda3\Scripts\conda.exe'
-$env:PYTHONPATH = (Resolve-Path 'src').Path
-$env:PYTHONUTF8 = '1'
-$env:PYTHONIOENCODING = 'utf-8'
-& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; print(torch.__version__); print('cuda=', torch.cuda.is_available())"
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[train,test]"
+
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
+python -c "import torch; print(torch.__version__); print('cuda=', torch.cuda.is_available())"
 ```
 
-当前核验使用的是 CPU 版 PyTorch。它可以运行 v0 和框架单元测试，但不能验证真实 CUDA 训练或 Flash Attention。
+上面的 `pip install -e` 会把当前源码仓库安装为 editable package；`PYTHONPATH` 同时保证你修改版本目录后立刻导入最新源码。正式训练前还需要安装与你的 NVIDIA 驱动和 CUDA 版本匹配的 PyTorch，并确认 `nvidia-smi` 可以看到目标 GPU。
 
 ## 第 2 步：先看懂 v0 Encoder
 
@@ -166,19 +174,19 @@ network(private_lq_rgb, private_latent)
 
 ## 第 5 步：运行 v0 语法和导入检查
 
-```powershell
-& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v0/base_network.py
-& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v0/wrapped_network.py
-& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v0/entrypoints.py
-& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; import private_codec.versions.v0.entrypoints; print('v0 imports ok')"
+```bash
+python -m py_compile src/private_codec/versions/v0/base_network.py
+python -m py_compile src/private_codec/versions/v0/wrapped_network.py
+python -m py_compile src/private_codec/versions/v0/entrypoints.py
+python -c "import torch; import private_codec.versions.v0.entrypoints; print('v0 imports ok')"
 ```
 
 `py_compile` 退出码为 0 只代表语法正确。下面的 Bridge probe 才会实际构造网络并执行 forward。
 
 ## 第 6 步：单独运行 v0 Encoder Bridge
 
-```powershell
-& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; from private_codec.factories import create_encoder; m=create_encoder(builder='private_codec.versions.v0.entrypoints:build_encoder', runner='private_codec.versions.v0.entrypoints:run_encoder', builder_kwargs={}, runner_kwargs={}, teacher_reference={'role':'encoder'}); x=torch.randn(1,3,256,256); y=m(x); print('encoder output=', tuple(y.shape), y.dtype)"
+```bash
+python -c "import torch; from private_codec.factories import create_encoder; m=create_encoder(builder='private_codec.versions.v0.entrypoints:build_encoder', runner='private_codec.versions.v0.entrypoints:run_encoder', builder_kwargs={}, runner_kwargs={}, teacher_reference={'role':'encoder'}); x=torch.randn(1,3,256,256); y=m(x); print('encoder output=', tuple(y.shape), y.dtype)"
 ```
 
 默认输出应为：
@@ -191,8 +199,8 @@ encoder output= (1, 16, 32, 32)
 
 ## 第 7 步：单独运行 v0 条件 Decoder Bridge
 
-```powershell
-& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; from private_codec.factories import create_conditional_decoder; m=create_conditional_decoder(builder='private_codec.versions.v0.entrypoints:build_decoder', runner='private_codec.versions.v0.entrypoints:run_decoder', builder_kwargs={}, runner_kwargs={}, teacher_reference={'role':'conditional_decoder'}); z=torch.randn(1,16,32,32); lq=torch.randn(1,3,256,256); y=m(z,lq); print('decoder output=', tuple(y.shape), y.dtype)"
+```bash
+python -c "import torch; from private_codec.factories import create_conditional_decoder; m=create_conditional_decoder(builder='private_codec.versions.v0.entrypoints:build_decoder', runner='private_codec.versions.v0.entrypoints:run_decoder', builder_kwargs={}, runner_kwargs={}, teacher_reference={'role':'conditional_decoder'}); z=torch.randn(1,16,32,32); lq=torch.randn(1,3,256,256); y=m(z,lq); print('decoder output=', tuple(y.shape), y.dtype)"
 ```
 
 默认输出应为：
@@ -293,8 +301,8 @@ Encoder 的 `teacher_reference` 类似：
 
 在仓库根目录执行：
 
-```powershell
-Copy-Item -Recurse src/private_codec/versions/v0 src/private_codec/versions/v1
+```bash
+cp -a src/private_codec/versions/v0 src/private_codec/versions/v1
 ```
 
 复制后得到：
@@ -330,8 +338,8 @@ kwargs:
   builder: private_codec.versions.v1.entrypoints:build_encoder
   runner: private_codec.versions.v1.entrypoints:run_encoder
   builder_kwargs:
-    config_path: D:/models/private_codec/v1.yaml
-    weights_path: D:/models/private_codec/v1.pth
+    config_path: ~/dit_codec/models/private_codec/v1.yaml
+    weights_path: ~/dit_codec/models/private_codec/v1.pth
   runner_kwargs: {}
 ```
 
@@ -342,8 +350,8 @@ kwargs:
   builder: private_codec.versions.v1.entrypoints:build_decoder
   runner: private_codec.versions.v1.entrypoints:run_decoder
   builder_kwargs:
-    config_path: D:/models/private_codec/v1.yaml
-    weights_path: D:/models/private_codec/v1.pth
+    config_path: ~/dit_codec/models/private_codec/v1.yaml
+    weights_path: ~/dit_codec/models/private_codec/v1.pth
   runner_kwargs: {}
 ```
 
@@ -365,11 +373,11 @@ student_decoder:
 
 先做语法和导入检查：
 
-```powershell
-& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v1/base_network.py
-& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v1/wrapped_network.py
-& $CodecConda run --no-capture-output -n base python -m py_compile src/private_codec/versions/v1/entrypoints.py
-& $CodecConda run --no-capture-output -n base python -c "import numpy, torch; import private_codec.versions.v1.entrypoints; print('v1 imports ok')"
+```bash
+python -m py_compile src/private_codec/versions/v1/base_network.py
+python -m py_compile src/private_codec/versions/v1/wrapped_network.py
+python -m py_compile src/private_codec/versions/v1/entrypoints.py
+python -c "import torch; import private_codec.versions.v1.entrypoints; print('v1 imports ok')"
 ```
 
 再把第 6、7 步命令中的 v0 路径换成 v1，验证 Builder、Runner、尺寸和梯度。
@@ -399,7 +407,7 @@ configs/local/private_codec_conditional_decoder.yaml
 
 准备好真实教师权重、数据路径和 CUDA 环境后运行：
 
-```powershell
+```bash
 python -m distill_codec.cli probe --config configs/local/private_codec_encoder.yaml
 python -m distill_codec.cli probe --config configs/local/private_codec_conditional_decoder.yaml
 ```
@@ -410,7 +418,7 @@ python -m distill_codec.cli probe --config configs/local/private_codec_condition
 
 条件 Decoder 示例：
 
-```powershell
+```bash
 python -m distill_codec.cli train --config configs/local/private_codec_conditional_decoder.yaml
 ```
 

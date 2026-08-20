@@ -2,7 +2,7 @@
 
 一个契约驱动的 PyTorch 编解码器蒸馏工程，面向以下场景：
 
-主要训练 FlashVSR `LQ_proj_in` 和条件 `TCDecoder` 时，请直接阅读 [FlashVSR 蒸馏教程](FLASHVSR_DISTILL_TUTORIAL.md)。如果你的私有编解码器由“基础网络 `.py` + 继承封装 `.py`”组成，请阅读 [黑盒编解码器接入教程](PRIVATE_CODEC_INTEGRATION_TUTORIAL.md)，工程已经准备好可直接粘贴源码的空文件和配置模板。
+主要训练 FlashVSR `LQ_proj_in` 和条件 `TCDecoder` 时，请直接阅读 [FlashVSR 蒸馏教程](FLASHVSR_DISTILL_TUTORIAL.md)。如果你的私有编解码器由“基础网络 `.py` + 继承封装 `.py`”组成，请阅读 [黑盒编解码器接入教程](PRIVATE_CODEC_INTEGRATION_TUTORIAL.md)，工程已经提供可运行并可复制为 v1/v2 的 `versions/v0` 模板。
 
 - 学生编码器输入 `[B,6,H/2,W/2]` 的 `Y00,Y01,Y10,Y11,U,V` 打包数据，输出 `[B,16,H/8,W/8]` latent；
 - 学生解码器输入 latent，输出 U/V 仅在每个 `2x2` 左上角有效的 sparse YUV；
@@ -46,12 +46,6 @@ Ubuntu 完整 CPU smoke：
 
 ```bash
 PYTHON_BIN="$(command -v python)" ./scripts/run_smoke.sh work/smoke
-```
-
-Windows PowerShell 可使用现有入口：
-
-```powershell
-.\scripts\run_smoke.ps1 -PythonExe ".\.venv\Scripts\python.exe" -OutputRoot "work/smoke"
 ```
 
 Smoke 会运行七个 Recipe：

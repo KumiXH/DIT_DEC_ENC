@@ -261,7 +261,7 @@ def test_private_codec_tutorial_names_every_fill_in_file_and_probe_command():
         "lq_rgb=lq_rgb",
         "dit_latent=dit_latent",
         "teacher_reference",
-        "Copy-Item -Recurse src/private_codec/versions/v0 src/private_codec/versions/v1",
+        "cp -a src/private_codec/versions/v0 src/private_codec/versions/v1",
         "private_codec.versions.v0.entrypoints",
         "private_codec.versions.v1.entrypoints",
         "module_path: private_codec.versions.v1.wrapped_network",
@@ -271,8 +271,11 @@ def test_private_codec_tutorial_names_every_fill_in_file_and_probe_command():
         "框架已经验证",
         "v0 示例网络已经验证",
         "真实私有网络仍需验证",
-        "C:\\Users\\xh932\\anaconda3\\Scripts\\conda.exe",
-        "$env:PYTHONPATH = (Resolve-Path 'src').Path",
+        "python3 -m venv .venv",
+        "source .venv/bin/activate",
+        'python -m pip install -e ".[train,test]"',
+        'export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"',
+        "~/dit_codec/models/private_codec/v1.pth",
         "python -m py_compile",
         "builder_kwargs",
         "runner_kwargs",
@@ -284,3 +287,13 @@ def test_private_codec_tutorial_names_every_fill_in_file_and_probe_command():
 
     assert "不要修改 `src/private_codec/bridge.py`" in tutorial
     assert "不要修改 `src/private_codec/factories.py`" in tutorial
+    for windows_marker in (
+        "```powershell",
+        "Copy-Item",
+        "Resolve-Path",
+        "$env:",
+        "conda.exe",
+        "C:\\Users\\",
+        "D:/",
+    ):
+        assert windows_marker not in tutorial
