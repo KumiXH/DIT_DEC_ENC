@@ -297,3 +297,83 @@ def test_private_codec_tutorial_names_every_fill_in_file_and_probe_command():
         "D:/",
     ):
         assert windows_marker not in tutorial
+
+
+def test_private_codec_v0_proj_in_is_a_copyable_dynamic_condition_encoder():
+    version = PRIVATE_CODEC / "versions" / "v0_proj_in"
+    for path in (
+        version / "__init__.py",
+        version / "base_network.py",
+        version / "wrapped_network.py",
+        version / "entrypoints.py",
+    ):
+        assert path.is_file()
+
+    for name in ("base_network.py", "wrapped_network.py", "entrypoints.py"):
+        assert "COPY" in (version / name).read_text(encoding="utf-8")
+
+    from private_codec.versions.v0_proj_in.entrypoints import (
+        create_condition_encoder,
+    )
+
+    model = create_condition_encoder()
+    video = torch.randn(1, 3, 5, 256, 256, requires_grad=True)
+    condition = model(video)
+    condition.square().mean().backward()
+
+    assert condition.shape == (1, 256, 1536)
+    assert video.grad is not None
+    assert torch.isfinite(video.grad).all()
+    parameter_gradients = [
+        parameter.grad for parameter in model.parameters() if parameter.requires_grad
+    ]
+    assert parameter_gradients
+    assert all(gradient is not None for gradient in parameter_gradients)
+    assert all(torch.isfinite(gradient).all() for gradient in parameter_gradients)
+
+
+def test_private_codec_v0_proj_in_token_count_follows_input_resolution():
+    from private_codec.versions.v0_proj_in.entrypoints import (
+        create_condition_encoder,
+    )
+
+    model = create_condition_encoder()
+    condition = model(torch.randn(1, 3, 5, 64, 32))
+
+    assert condition.shape == (1, 8, 1536)
+
+
+def test_complete_private_codec_lq_proj_example_uses_v0_proj_in_without_includes():
+    path = Path("configs/examples/private_codec_lq_proj.yaml")
+    raw_config = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    assert "includes" not in raw_config
+    assert set(raw_config) >= {
+        "latent_spec",
+        "color",
+        "recipe",
+        "components",
+        "data",
+        "trainer",
+        "run",
+    }
+
+    config = load_config(path)
+    preflight_config(config)
+
+    assert config["recipe"] == {
+        "name": "flashvsr_lq_proj_distill",
+        "weights": {
+            "condition": 1.0,
+            "condition_cos": 0.1,
+            "condition_stat": 0.1,
+        },
+    }
+    student = config["components"]["student_condition_encoder"]
+    teacher = config["components"]["teacher_condition_encoder"]
+    assert student["factory"] == (
+        "private_codec.versions.v0_proj_in.entrypoints:create_condition_encoder"
+    )
+    assert student["adapter"]["condition_spec"] == teacher["adapter"][
+        "condition_spec"
+    ]

@@ -1,0 +1,72 @@
+latent_spec:  # ① 取值为映射；本工程所有 recipe 都要求存在 ② 描述项目通用 latent 契约，本 LQ_proj_in recipe 虽不直接训练 VAE latent，仍用于统一配置校验
+  family: wan_vae_v2  # ① 任意非空契约名称；若与真实 VAE 联用必须填写对应 family ② 标识 latent 所属模型家族，防止不同 latent 体系混用
+  channels: 16  # ① 正整数；此例按 Wan VAE 固定为 16 ② 声明 latent 的通道数，供组件和缓存契约检查
+  layout: BCHW  # ① BCHW 或 BCTHW；本例为单帧 BCHW ② 声明 latent 维度顺序，B/C/H/W 分别表示批次、通道、高、宽
+  spatial_downsample: 8  # ① 正整数；Wan VAE 通常固定为 8 ② 声明图像到 latent 的空间下采样倍数
+  temporal_downsample: 1  # ① 正整数；单帧 BCHW 通常为 1 ② 声明视频时间维到 latent 的时间下采样倍数
+  normalization: wan_vae  # ① 任意非空归一化方案名称；应与真实 latent 生成方式一致 ② 标记 latent 使用的归一化体系，避免数值分布不兼容
+color:  # ① 取值为映射；必须存在 ② 定义项目执行 RGB/YUV 转换时使用的颜色契约
+  matrix: bt709  # ① bt601 或 bt709；高清视频通常使用 bt709 ② 指定 RGB 与 YUV 相互转换所用的颜色矩阵
+  range: full  # ① full 或 limited ② 指定颜色数值使用全范围还是视频有限范围
+  packed_order: Y00Y01Y10Y11UV  # ① 当前工程只支持 Y00Y01Y10Y11UV ② 指定 4:2:0 YUV 打包为 6 通道时的通道顺序
+  chroma_location: top_left  # ① 当前工程只支持 top_left ② 指定 U/V 色度样本在 2x2 像素块中的对齐位置
+  chroma_upsample: nearest  # ① nearest 或 bilinear ② 指定把低分辨率 U/V 色度通道放大回图像尺寸的方法
+recipe:  # ① 取值为映射；必须至少包含 name ② 选择训练任务，并配置该任务中各项损失的权重
+  name: flashvsr_lq_proj_distill  # ① 可选为工程已注册的 recipe 名；本案例必须为 flashvsr_lq_proj_distill ② 启用 FlashVSR LQ_proj_in 条件编码器蒸馏流程
+  weights:  # ① 取值为“损失名: 数值”的映射；未填写项使用工程默认值 ② 控制各个蒸馏损失对总损失的贡献比例
+    condition: 1.0  # ① 数值，通常取大于等于 0；0 表示关闭 ② 对学生和教师条件特征计算 Smooth L1，并设置其权重
+    condition_cos: 0.1  # ① 数值，通常取大于等于 0；0 表示关闭 ② 对学生和教师条件特征计算余弦方向损失，并设置其权重
+    condition_stat: 0.1  # ① 数值，通常取大于等于 0；0 表示关闭 ② 对学生和教师条件特征计算通道统计量损失，并设置其权重
+components:  # ① 取值为组件名称到组件配置的映射；本 recipe 必须包含下面两个指定名称 ② 定义教师 LQ_proj_in 和学生私有条件编码器如何创建及适配
+  teacher_condition_encoder:  # ① 本 recipe 要求使用此固定组件名 ② 配置被冻结的 FlashVSR LQ_proj_in 教师网络
+    backend: snapshot  # ① mock、external 或 snapshot；真实源码快照教师使用 snapshot ② 决定组件由内置假模型、外部工厂还是源码快照工厂构建
+    factory: distill_codec.integrations.snapshots:create_lq_proj_in  # ① 必须是 module:function 格式；更换教师实现时可换工厂 ② 指定负责导入 FlashVSR 源码、构造 LQ_proj_in 并加载权重的函数
+    kwargs:  # ① 取值为映射；键名必须匹配 factory 函数参数 ② 把教师源码、权重和网络构造参数传给工厂
+      source_file: ../../third_party/flashvsr/utils.py  # ① 文件路径，可用相对路径、绝对路径或 ~；必须指向存在的 Python 文件 ② 指定包含 Causal_LQ4x_Proj 类的 FlashVSR 教师源码
+      checkpoint: ~/dit_codec/weights/LQ_proj_in.ckpt  # ① 权重文件路径，可用绝对路径或 ~；也可为 null 表示不加载，但真实蒸馏必须填写教师权重 ② 指定教师 LQ_proj_in checkpoint
+      class_name: Causal_LQ4x_Proj  # ① source_file 中实际存在的类名；当前 FlashVSR 教师固定为此类 ② 告诉工厂从教师源码中实例化哪个网络类
+      in_dim: 3  # ① 正整数；项目给教师 RGB，因此本案例必须为 3 ② 设置教师网络输入通道数
+      out_dim: 1536  # ① 正整数；必须与 condition_spec.feature_dim 和学生 condition_dim 一致 ② 设置每个条件 token 的特征维度
+      layer_num: 1  # ① 正整数；本案例必须为 1，否则教师会返回多组特征而与学生单组 features 键不一致 ② 设置教师输出的条件特征层数
+    freeze: true  # ① true 或 false；教师蒸馏必须使用 true ② 冻结教师参数并保持 eval 模式，不让优化器更新教师
+    adapter:  # ① 取值为映射；字段取决于 kind ② 把项目的 BCHW LQ RGB 转成教师需要的视频输入，并校验教师输出契约
+      kind: condition_encoder  # ① encoder、decoder 或 condition_encoder；此组件必须为 condition_encoder ② 选择条件编码器适配器，而不是普通 VAE 编码器或解码器适配器
+      temporal_frames: 5  # ① 正整数；应符合教师时间输入要求，本案例固定重复为 5 帧 ② 把项目给出的单张 LQ RGB 沿时间维重复成 [B,3,5,H,W]
+      condition_spec: &lq_proj_contract  # ① 取值为条件契约映射；& 后名称可自定义，此处创建 YAML 锚点供学生复用 ② 定义教师和学生必须共同满足的 BNC 输出契约
+        family: flashvsr_lq_proj_v1_1  # ① 任意非空契约名称；教师和学生必须相同 ② 标识这组条件特征属于哪一种 FlashVSR LQ_proj_in 接口
+        layout: BNC  # ① 当前 ConditionSpec 只支持 BNC ② 声明输出维度依次为批次 B、token 数 N、特征维 C
+        feature_dim: 1536  # ① 正整数；本案例必须与教师 out_dim 和学生 condition_dim 同为 1536 ② 校验每个条件 token 的最后一维大小
+        source: lq  # ① lq、gt 或 cached；LQ_proj_in 本案例必须为 lq ② 记录这组条件特征来自低质量 RGB 输入
+        consumer: dit  # ① dit 或 decoder；LQ_proj_in 输出供 DiT 使用，因此必须为 dit ② 记录条件特征的下游消费者
+        spatial_downsample: 16  # ① 正整数；本学生结构为卷积 /8 后 PixelUnshuffle(2)，因此固定为 16 ② 描述 token 网格相对输入 RGB 的空间下采样倍数
+        temporal_downsample: 5  # ① 正整数；此例 5 个重复帧最终合为一组条件，因此固定为 5 ② 描述条件 token 相对输入视频帧数的时间下采样倍数
+  student_condition_encoder:  # ① 本 recipe 要求使用此固定组件名 ② 配置需要训练的私有 v0_proj_in 学生网络
+    backend: external  # ① mock、external 或 snapshot；私有 Python 工厂使用 external ② 让工程通过 import path 调用你的学生网络创建函数
+    factory: private_codec.versions.v0_proj_in.entrypoints:create_condition_encoder  # ① 必须是 module:function 格式；新增版本时改成对应版本 entrypoint ② 指定创建 v0_proj_in 学生网络的公开入口
+    checkpoint: null  # ① null 或 checkpoint 文件路径；从头训练用 null，续接预训练学生可填写路径 ② 在工厂构造学生后可选加载学生 state_dict
+    kwargs:  # ① 取值为映射；键名必须匹配 create_condition_encoder 最终网络初始化参数 ② 配置学生示例主干和输出投影的结构尺寸
+      feature_channels: 32  # ① 正整数，可按显存和容量调整 ② 设置学生卷积主干第一层的基础特征通道数，后续中间层为其 2 倍
+      output_channels: 16  # ① 正整数，可调整但会改变 PixelUnshuffle 后投影层输入通道数 ② 设置学生主干在 H/8、W/8 尺度输出的通道数
+      unshuffle_factor: 2  # ① 正整数，且主干特征 H/W 必须能被该值整除；本契约必须为 2 ② 对 H/8、W/8 特征执行 PixelUnshuffle，使 token 网格达到 H/16、W/16
+      condition_dim: 1536  # ① 正整数；必须等于教师 out_dim 和契约 feature_dim ② 设置学生最终 1x1 卷积输出的条件特征维度
+    adapter:  # ① 取值为映射；应与教师使用同类适配器 ② 把项目 LQ RGB 转成学生输入，并校验学生输出契约
+      kind: condition_encoder  # ① encoder、decoder 或 condition_encoder；此学生必须为 condition_encoder ② 选择条件编码器适配器
+      temporal_frames: 5  # ① 正整数；本例需与教师保持 5 ② 把项目单张 LQ RGB 重复为学生接收的 [B,3,5,H,W]
+      condition_spec: *lq_proj_contract  # ① * 后名称必须引用前面已定义的 YAML 锚点 ② 让学生直接复用教师条件契约，避免两边字段手工填写不一致
+data:  # ① 取值为映射；lq_root 和 gt_root 必填，尺寸字段可省略 ② 配置成对图片数据集的位置及期望输入尺寸
+  lq_root: ~/dit_codec/LQ  # ① 已存在的目录路径，可用相对路径、绝对路径或 ~；支持任意层级子目录 ② 指定 LQ RGB 根目录，工程会递归扫描支持的图片格式
+  gt_root: ~/dit_codec/GT  # ① 已存在的目录路径，可用相对路径、绝对路径或 ~；相对文件名必须与 LQ 完全对应 ② 指定配对 GT 根目录，用于数据配对和训练批次
+  lq_size: [256, 256]  # ① [高度,宽度] 两个正整数，也可省略以接受原尺寸；本学生要求两者能被 16 整除 ② 校验每张 LQ 输入尺寸是否为 256x256
+  gt_size: [256, 256]  # ① [高度,宽度] 两个正整数，也可省略以接受原尺寸；通常与 lq_size 相同 ② 校验每张 GT 配对图片尺寸是否为 256x256
+trainer:  # ① 取值为映射；未填写的训练项使用 Trainer 默认值 ② 配置设备、批量大小、学习率、训练步数和保存频率
+  device: cuda  # ① cpu、cuda、cuda:N 或其他当前 PyTorch 支持的设备字符串 ② 指定模型、输入和损失计算所在设备
+  batch_size: 1  # ① 正整数，受 GPU 显存限制 ② 设置每次 DataLoader 取出的配对样本数量
+  learning_rate: 0.0001  # ① 浮点数，通常大于 0；默认 1e-4 ② 设置 AdamW 优化器的初始学习率
+  max_steps: 100000  # ① 正整数 ② 设置训练优化器更新的总步数，达到后结束训练
+  validate_every: 1000  # ① 正整数；建议不大于 max_steps ② 每隔多少个训练步执行一次验证并输出指标/验证图
+  checkpoint_every: 1000  # ① 正整数；建议不大于 max_steps ② 每隔多少个训练步保存一次可恢复训练的 checkpoint
+  num_workers: 4  # ① 大于等于 0 的整数；0 表示在主进程加载数据 ② 设置 DataLoader 并行读取图片的工作进程数
+  amp: true  # ① true 或 false；仅在 CUDA 设备上实际启用 ② 控制是否使用自动混合精度以减少显存并加速训练
+run:  # ① 取值为映射；可省略未使用字段 ② 配置本次实验输出位置和随机种子
+  output_dir: ~/dit_codec/runs/private_codec_lq_proj  # ① 可写目录路径，可用相对路径、绝对路径或 ~ ② 保存 metrics.jsonl、验证图、TensorBoard 数据和 checkpoints
+  seed: 7  # ① 整数；相同配置和环境下使用相同值便于复现 ② 设置 Python、PyTorch、CUDA、NumPy 和 DataLoader 的随机种子
