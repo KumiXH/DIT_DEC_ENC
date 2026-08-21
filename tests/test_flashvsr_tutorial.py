@@ -29,6 +29,7 @@ def test_tutorial_documents_stepwise_training_and_artifacts():
     for marker in (
         "configs/local/flashvsr_lq_proj.yaml",
         "configs/local/flashvsr_tcdecoder.yaml",
+        "configs/local/private_codec_conditional_decoder_offline.yaml",
         "python -m distill_codec.cli probe",
         "python -m distill_codec.cli train",
         "metrics.jsonl",
@@ -44,6 +45,11 @@ def test_tutorial_documents_stepwise_training_and_artifacts():
         "validation 和 probe",
         "center crop",
         "cached",
+        "teacher_target_provider",
+        "type: dataset_gt",
+        "TCDECODER_RGB",
+        "DIT_LATENT",
+        "gt: 0.0",
     ):
         assert marker in tutorial
     assert "PowerShell" not in tutorial

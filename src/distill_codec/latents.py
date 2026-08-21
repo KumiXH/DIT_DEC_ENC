@@ -130,3 +130,10 @@ class DatasetLatentProvider(LatentProvider):
         if batch.latent is None:
             raise ContractError("DistillBatch does not contain latent for dataset provider")
         return self._validate(batch.latent, batch)
+
+
+class DatasetGTTeacherTargetProvider(nn.Module):
+    source = "dataset_gt"
+
+    def forward(self, batch: DistillBatch) -> Tensor:
+        return batch.gt_rgb

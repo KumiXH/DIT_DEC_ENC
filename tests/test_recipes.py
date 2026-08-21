@@ -145,6 +145,52 @@ def test_conditional_flashvsr_teacher_gets_aligned_lq_while_student_gets_raw_lq(
     assert output.metadata["condition_shape"] == [2, 3, 64, 64]
 
 
+def test_conditional_flashvsr_can_use_dataset_gt_as_offline_teacher_target():
+    class FixedLatentProvider(nn.Module):
+        def forward(self, batch):
+            return torch.zeros(batch.batch_size, 16, 8, 8, device=batch.lq_rgb.device)
+
+    class DatasetGTTeacherTarget(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def forward(self, batch):
+            self.calls += 1
+            return batch.gt_rgb
+
+    batch = _batch()
+    target_provider = DatasetGTTeacherTarget()
+    components = {
+        "conditional_student_decoder": DecoderAdapter(
+            MockConditionalStudentDecoder(),
+            output_mode="sparse_yuv",
+            color_spec=ColorSpec(),
+            accepts_condition=True,
+        ),
+        "latent_provider": FixedLatentProvider(),
+        "teacher_target_provider": target_provider,
+    }
+    recipe = build_recipe("flashvsr_decoder_conditional_student", components)
+
+    output = recipe(batch)
+
+    assert target_provider.calls == 1
+    assert output.images["teacher"] is batch.gt_rgb
+    assert output.metadata["teacher_target_source"] == "dataset_gt"
+
+
+def test_offline_teacher_targets_are_rejected_for_non_flashvsr_recipes():
+    components = _components()
+    components["teacher_target_provider"] = nn.Identity()
+
+    with pytest.raises(
+        ValueError,
+        match="teacher_target_provider.*FlashVSR decoder",
+    ):
+        build_recipe("wan_decoder_distill", components)
+
+
 def test_private_v0_conditional_decoder_uses_latent_target_size_with_raw_lq():
     from private_codec.factories import create_conditional_decoder
 

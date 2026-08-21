@@ -432,6 +432,120 @@ python -m distill_codec.cli train --config configs/local/private_codec_condition
 
 CPU 的 v0 测试不能替代真实私有网络的 CUDA probe 和短训练。
 
+## 第 15 步：使用离线 DiT latent 和 TCDecoder RGB 蒸馏
+
+如果已经提前生成下面三类数据，训练时可以完全不加载 DiT、Wan Encoder 和教师 TCDecoder：
+
+```text
+LQ RGB
+  -> 已缓存 DiT latent
+  -> 已缓存 TCDecoder RGB 教师目标
+```
+
+工程已经准备好离线配置：
+
+```text
+configs/local/private_codec_conditional_decoder_offline.yaml
+```
+
+### 15.1 准备三个目录
+
+三个目录必须使用相同的相对样本名。LQ 和 TCDecoder RGB 的完整相对文件名必须一致；latent 把图片后缀替换为 `.pt`：
+
+```text
+~/dit_codec/LQ/scene_01/000001.png
+~/dit_codec/TCDECODER_RGB/scene_01/000001.png
+~/dit_codec/DIT_LATENT/scene_01/000001.pt
+```
+
+每个 latent 文件可以直接保存 `[C,H,W]` Tensor，也可以保存：
+
+```python
+{"latent": latent_tensor}
+```
+
+`[1,C,H,W]` 也会自动移除第一个 batch 维。默认配置要求每张 `256x256` 教师 RGB 对应 `[16,32,32]` latent。
+
+### 15.2 创建 latent manifest
+
+缓存目录必须包含 `manifest.pt`。在项目根目录运行：
+
+```bash
+python - <<'PY'
+from pathlib import Path
+
+import torch
+
+root = Path.home() / "dit_codec/DIT_LATENT"
+root.mkdir(parents=True, exist_ok=True)
+torch.save(
+    {
+        "latent_spec": {
+            "family": "wan_vae_v2",
+            "channels": 16,
+            "layout": "BCHW",
+            "spatial_downsample": 8,
+            "temporal_downsample": 1,
+            "normalization": "wan_vae",
+        }
+    },
+    root / "manifest.pt",
+)
+PY
+```
+
+manifest 必须与生成 DiT latent 时的真实通道、布局、下采样和归一化完全一致，不能只为了通过检查而填写。
+
+### 15.3 理解离线配置
+
+核心配置如下：
+
+```yaml
+latent_provider:
+  type: cached
+  root: ~/dit_codec/DIT_LATENT
+
+teacher_target_provider:
+  type: dataset_gt
+
+data:
+  lq_root: ~/dit_codec/LQ
+  gt_root: ~/dit_codec/TCDECODER_RGB
+  augmentation:
+    enabled: false
+```
+
+这里的 `data.gt_root` 是 TCDecoder 教师伪标签，不是真实 HQ GT。因此模板设置：
+
+```yaml
+weights:
+  teacher: 1.0
+  gt: 0.0
+  edge: 0.1
+```
+
+`gt` 权重设为 `0.0`，避免把同一张 TCDecoder RGB 同时作为 teacher loss 和真实 GT loss 重复加权。`edge` 仍然针对这张教师 RGB 计算。
+
+缓存 latent 无法跟随训练时随机裁切、旋转或平移，因此离线配置强制关闭几何增强。若需要增强版本，应先增强 LQ，再重新执行 DiT 和 TCDecoder，把结果保存成新的三元组样本。
+
+### 15.4 Probe 和训练
+
+先检查目录配对、manifest、所有 latent shape 和一次完整前向：
+
+```bash
+python -m distill_codec.cli probe \
+  --config configs/local/private_codec_conditional_decoder_offline.yaml
+```
+
+通过后开始训练：
+
+```bash
+python -m distill_codec.cli train \
+  --config configs/local/private_codec_conditional_decoder_offline.yaml
+```
+
+这个模式只会构造缓存读取器和私有学生 Decoder，不会构造或调用 `teacher_encoder`、`tc_decoder` 或 DiT。启动预检会拒绝缺失、多余或 shape 不符合 `latent_spec` 的缓存 latent。
+
 ## 最终逐项检查
 
 - [ ] 已先运行 v0 Encoder 和 Decoder Bridge probe
@@ -447,6 +561,8 @@ CPU 的 v0 测试不能替代真实私有网络的 CUDA probe 和短训练。
 - [ ] `teacher_reference` 只用于查看教师理论尺寸
 - [ ] 新版本 Bridge probe 已通过
 - [ ] 真实 CUDA probe 和短训练已确认梯度、输出和 checkpoint
+- [ ] 若使用离线方案，LQ、TCDecoder RGB 和 DiT latent 的相对样本名完全对应
+- [ ] 若使用离线方案，`manifest.pt` 与真实 DiT latent 契约一致且几何增强已关闭
 
 ## 相关文档
 

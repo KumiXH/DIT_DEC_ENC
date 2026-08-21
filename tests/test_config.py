@@ -460,6 +460,44 @@ def test_cached_latent_provider_constructs_without_teacher_encoder(tmp_path):
     assert "latent_provider" in recipe.components
 
 
+def test_offline_flashvsr_teacher_targets_construct_without_teacher_modules(tmp_path):
+    latent_root = tmp_path / "latents"
+    latent_root.mkdir()
+    config = load_config("configs/smoke/flashvsr_decoder_conditional.yaml")
+    torch.save({"latent_spec": config["latent_spec"]}, latent_root / "manifest.pt")
+    config["latent_provider"] = {"type": "cached", "root": str(latent_root)}
+    config["teacher_target_provider"] = {"type": "dataset_gt"}
+    config["components"].pop("teacher_encoder")
+    config["components"].pop("tc_decoder")
+
+    preflight_config(config)
+    components = build_components(config)
+    recipe = build_recipe("flashvsr_decoder_conditional_student", components)
+
+    assert set(recipe.components) == {
+        "conditional_student_decoder",
+        "latent_provider",
+        "teacher_target_provider",
+    }
+
+
+def test_dataset_gt_teacher_targets_require_cached_latents():
+    config = load_config("configs/smoke/flashvsr_decoder_conditional.yaml")
+    config["teacher_target_provider"] = {"type": "dataset_gt"}
+
+    with pytest.raises(
+        ContractError,
+        match="teacher_target_provider.*dataset_gt.*latent_provider.*cached",
+    ):
+        preflight_config(config)
+
+    with pytest.raises(
+        ContractError,
+        match="teacher_target_provider.*dataset_gt.*latent_provider.*cached",
+    ):
+        build_components(config)
+
+
 def test_standard_trainer_rejects_dataset_latent_provider(tmp_path):
     from distill_codec.data import create_mock_dataset
     from distill_codec.trainer import Trainer

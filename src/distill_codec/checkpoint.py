@@ -39,6 +39,8 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
         "recipe_source": str(recipe.get("source", "gt")),
         "recipe_weights": dict(recipe.get("weights", {})),
         "compatibility_every": int(recipe.get("compatibility_every", 1)),
+        "latent_provider": dict(config.get("latent_provider", {})),
+        "teacher_target_provider": dict(config.get("teacher_target_provider", {})),
         "augmentation": paired_augmentation_from_config(config).to_dict(),
     }
 
@@ -176,6 +178,10 @@ def load_checkpoint(
         )
     expected_training = training_contract(config)
     saved_training = payload.get("training_contract", training_contract(payload["config"]))
+    saved_training = dict(saved_training)
+    saved_config_training = training_contract(payload["config"])
+    for name in ("latent_provider", "teacher_target_provider"):
+        saved_training.setdefault(name, saved_config_training[name])
     if expected_training != saved_training:
         mismatches = [
             f"{name}: expected={expected_training[name]!r}, saved={saved_training.get(name)!r}"

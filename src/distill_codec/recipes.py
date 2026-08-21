@@ -72,6 +72,7 @@ TEACHER_COMPONENTS = {
     "teacher_condition_encoder",
     "tc_decoder",
     "latent_provider",
+    "teacher_target_provider",
 }
 
 
@@ -90,7 +91,20 @@ class DistillationRecipe(nn.Module):
             raise ValueError(f"unknown recipe {name!r}; available recipes={sorted(RECIPE_NAMES)}")
         if source not in {"lq", "gt"}:
             raise ContractError(f"recipe source must be lq or gt, got {source!r}")
-        missing = REQUIRED_COMPONENTS[name] - set(components)
+        if "teacher_target_provider" in components and name not in {
+            "flashvsr_decoder_unconditional_student",
+            "flashvsr_decoder_conditional_student",
+        }:
+            raise ValueError(
+                "teacher_target_provider is only supported by FlashVSR decoder recipes"
+            )
+        required_components = set(REQUIRED_COMPONENTS[name])
+        if name in {
+            "flashvsr_decoder_unconditional_student",
+            "flashvsr_decoder_conditional_student",
+        } and "teacher_target_provider" in components:
+            required_components.discard("tc_decoder")
+        missing = required_components - set(components)
         if missing:
             raise ContractError(f"recipe {name!r} is missing components: {sorted(missing)}")
         self.name = name
@@ -98,7 +112,9 @@ class DistillationRecipe(nn.Module):
         if compatibility_every <= 0:
             raise ContractError("compatibility_every must be positive")
         self.compatibility_every = compatibility_every
-        selected = {key: components[key] for key in sorted(REQUIRED_COMPONENTS[name])}
+        selected = {key: components[key] for key in sorted(required_components)}
+        if "teacher_target_provider" in components:
+            selected["teacher_target_provider"] = components["teacher_target_provider"]
         if name in {
             "wan_decoder_distill",
             "flashvsr_decoder_unconditional_student",
@@ -235,7 +251,9 @@ class DistillationRecipe(nn.Module):
             ).clamp(0.0, 1.0)
         with torch.no_grad():
             latent = self.components["latent_provider"](batch)
-            if flashvsr:
+            if "teacher_target_provider" in self.components:
+                teacher_rgb = self.components["teacher_target_provider"](batch)
+            elif flashvsr:
                 teacher_rgb = self.components["tc_decoder"](latent, teacher_condition_rgb)
             else:
                 teacher_rgb = self.components["teacher_decoder"](latent)
@@ -279,6 +297,11 @@ class DistillationRecipe(nn.Module):
             metadata={
                 "student_accepts_condition": conditional,
                 "condition_shape": list(teacher_condition_rgb.shape),
+                "teacher_target_source": (
+                    "dataset_gt"
+                    if "teacher_target_provider" in self.components
+                    else "online"
+                ),
             },
         )
 

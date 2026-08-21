@@ -682,6 +682,62 @@ run:
 
 这里的 Wan Encoder 只是 latent provider。训练器不会构造或执行 DiT。
 
+### 7.1 可选：完全离线的 DiT latent + TCDecoder RGB 模式
+
+如果已经使用最终生产版 DiT 和 TCDecoder 提前生成数据，可以改用仓库准备好的离线配置：
+
+```text
+configs/local/private_codec_conditional_decoder_offline.yaml
+```
+
+数据目录必须一一对应：
+
+```text
+~/dit_codec/LQ/scene_01/000001.png
+~/dit_codec/TCDECODER_RGB/scene_01/000001.png
+~/dit_codec/DIT_LATENT/scene_01/000001.pt
+```
+
+核心配置是：
+
+```yaml
+latent_provider:
+  type: cached
+  root: ~/dit_codec/DIT_LATENT
+
+teacher_target_provider:
+  type: dataset_gt
+
+data:
+  lq_root: ~/dit_codec/LQ
+  gt_root: ~/dit_codec/TCDECODER_RGB
+  augmentation:
+    enabled: false
+```
+
+这个模式下 `gt_root` 保存的是 TCDecoder 教师伪标签，不是真实 HQ GT，所以模板使用：
+
+```yaml
+weights:
+  teacher: 1.0
+  gt: 0.0
+  edge: 0.1
+```
+
+训练时只构造缓存 latent reader 和学生 Decoder，不会加载或运行 DiT、Wan Encoder、教师 TCDecoder。缓存 latent 不能跟随随机几何变换，因此必须关闭训练时裁切、旋转和平移；需要增强时，应离线重新生成完整的 LQ、DiT latent、TCDecoder RGB 三元组。
+
+`DIT_LATENT` 根目录还必须包含与真实 latent 契约一致的 `manifest.pt`。完整目录规则、manifest 生成命令和检查步骤见 [私有黑盒编解码器接入教程](PRIVATE_CODEC_INTEGRATION_TUTORIAL.md#第-15-步使用离线-dit-latent-和-tcdecoder-rgb-蒸馏)。
+
+运行：
+
+```bash
+python -m distill_codec.cli probe \
+  --config configs/local/private_codec_conditional_decoder_offline.yaml
+
+python -m distill_codec.cli train \
+  --config configs/local/private_codec_conditional_decoder_offline.yaml
+```
+
 ## 🚀 第 8 步：蒸馏条件 `TCDecoder`
 
 ### 8.1 先执行真实 probe
@@ -1160,6 +1216,8 @@ python -m distill_codec.cli train \
 | LQ 训练 | `python -m distill_codec.cli train --config configs/local/flashvsr_lq_proj.yaml` |
 | TCDecoder 真实 probe | `python -m distill_codec.cli probe --config configs/local/flashvsr_tcdecoder.yaml` |
 | TCDecoder 训练 | `python -m distill_codec.cli train --config configs/local/flashvsr_tcdecoder.yaml` |
+| TCDecoder 离线 probe | `python -m distill_codec.cli probe --config configs/local/private_codec_conditional_decoder_offline.yaml` |
+| TCDecoder 离线训练 | `python -m distill_codec.cli train --config configs/local/private_codec_conditional_decoder_offline.yaml` |
 | 实时日志 | `tail -f "$HOME/dit_codec/runs/<task>/metrics.jsonl"` |
 | TensorBoard | `tensorboard --logdir "$HOME/dit_codec/runs" --host 0.0.0.0 --port 6006` |
 | 恢复训练 | 在训练命令后加入 `--resume ".../checkpoints/step_XXXXXXXX.pt"` |

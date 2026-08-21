@@ -12,7 +12,12 @@ from .augmentation import paired_augmentation_from_config
 from .adapters import ConditionEncoderAdapter, DecoderAdapter, EncoderAdapter, freeze_module
 from .contracts import ColorSpec, ConditionSpec, ContractError, LatentSpec
 from .factories import build_from_factory
-from .latents import CachedLatentProvider, DatasetLatentProvider, TeacherEncoderLatentProvider
+from .latents import (
+    CachedLatentProvider,
+    DatasetGTTeacherTargetProvider,
+    DatasetLatentProvider,
+    TeacherEncoderLatentProvider,
+)
 from .models.mock import (
     MockConditionalStudentDecoder,
     MockLQProjIn,
@@ -56,6 +61,49 @@ RECIPE_COMPONENTS = {
     "flashvsr_decoder_unconditional_student": {"tc_decoder", "student_decoder"},
     "flashvsr_decoder_conditional_student": {"tc_decoder", "conditional_student_decoder"},
 }
+
+
+def _teacher_target_type(config: Mapping[str, Any]) -> str:
+    provider = config.get("teacher_target_provider")
+    if provider is None:
+        return "online"
+    if not isinstance(provider, Mapping):
+        raise ContractError("config field teacher_target_provider must be a mapping")
+    provider_type = provider.get("type", "online")
+    if provider_type not in {"online", "dataset_gt"}:
+        raise ContractError(
+            f"unknown teacher_target_provider type {provider_type!r}; expected online or dataset_gt"
+        )
+    return str(provider_type)
+
+
+def _required_components(config: Mapping[str, Any], recipe_name: str) -> set[str]:
+    required = set(RECIPE_COMPONENTS[recipe_name])
+    if _teacher_target_type(config) == "dataset_gt":
+        if recipe_name not in {
+            "flashvsr_decoder_unconditional_student",
+            "flashvsr_decoder_conditional_student",
+        }:
+            raise ContractError(
+                "teacher_target_provider.type='dataset_gt' is only supported by FlashVSR decoder recipes"
+            )
+        required.discard("tc_decoder")
+    return required
+
+
+def _validate_teacher_target_provider(
+    config: Mapping[str, Any],
+    latent_provider: Mapping[str, Any] | None,
+    *,
+    location: str,
+) -> None:
+    if _teacher_target_type(config) == "dataset_gt" and (
+        latent_provider is None or latent_provider.get("type") != "cached"
+    ):
+        raise ContractError(
+            "teacher_target_provider.type='dataset_gt' requires latent_provider.type='cached'; "
+            f"config={location}"
+        )
 
 
 def _config_location(config: Mapping[str, Any]) -> str:
@@ -102,7 +150,7 @@ def preflight_config(config: Mapping[str, Any]) -> None:
         if not data.get(name):
             raise ContractError(f"config requires data.{name}; config={location}")
     components = _require_mapping(config, "components", path="components", location=location)
-    required = set(RECIPE_COMPONENTS[recipe_name])
+    required = _required_components(config, recipe_name)
     provider = config.get("latent_provider")
     if provider is not None and not isinstance(provider, Mapping):
         raise ContractError(f"config field latent_provider must be a mapping; config={location}")
@@ -121,6 +169,11 @@ def preflight_config(config: Mapping[str, Any]) -> None:
             )
     if isinstance(provider, Mapping) and provider.get("type") == "cached" and not provider.get("root"):
         raise ContractError(f"config requires latent_provider.root; config={location}")
+    _validate_teacher_target_provider(
+        config,
+        provider if isinstance(provider, Mapping) else None,
+        location=location,
+    )
     try:
         paired_augmentation_from_config(config)
     except ContractError as error:
@@ -416,8 +469,19 @@ def build_components(config: Mapping[str, Any]) -> dict[str, nn.Module]:
     latent_spec = LatentSpec.from_dict(config["latent_spec"])
     color_spec = ColorSpec.from_dict(config["color"])
     recipe_name = config.get("recipe", {}).get("name")
-    required = set(RECIPE_COMPONENTS.get(recipe_name, config.get("components", {}).keys()))
+    required = (
+        _required_components(config, recipe_name)
+        if recipe_name in RECIPE_COMPONENTS
+        else set(config.get("components", {}).keys())
+    )
     provider_values = config.get("latent_provider")
+    if provider_values is not None and not isinstance(provider_values, Mapping):
+        raise ContractError("config field latent_provider must be a mapping")
+    _validate_teacher_target_provider(
+        config,
+        provider_values,
+        location=_config_location(config),
+    )
     if recipe_name in {
         "wan_decoder_distill",
         "flashvsr_decoder_unconditional_student",
@@ -502,4 +566,6 @@ def build_components(config: Mapping[str, Any]) -> dict[str, nn.Module]:
             raise ContractError(
                 f"unknown latent_provider type {provider_type!r}; expected teacher_encoder, cached, dataset, or frozen_dit"
             )
+    if _teacher_target_type(config) == "dataset_gt":
+        result["teacher_target_provider"] = DatasetGTTeacherTargetProvider()
     return result

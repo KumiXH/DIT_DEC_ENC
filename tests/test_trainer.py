@@ -168,6 +168,58 @@ def test_trainer_preflights_all_cached_latents_before_training(tmp_path):
         _make_trainer(config)
 
 
+def test_offline_flashvsr_trains_without_teacher_modules(tmp_path):
+    paths = create_mock_dataset(tmp_path / "data", count=2, size=(32, 32), seed=5)
+    latent_root = tmp_path / "latents"
+    config = load_config("configs/smoke/flashvsr_decoder_conditional.yaml")
+    for relative in sorted(path.relative_to(paths.gt_root) for path in paths.gt_root.rglob("*.png")):
+        latent_path = (latent_root / relative).with_suffix(".pt")
+        latent_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(torch.zeros(16, 4, 4), latent_path)
+    torch.save({"latent_spec": config["latent_spec"]}, latent_root / "manifest.pt")
+    config["components"].pop("teacher_encoder")
+    config["components"].pop("tc_decoder")
+    config["latent_provider"] = {"type": "cached", "root": str(latent_root)}
+    config["teacher_target_provider"] = {"type": "dataset_gt"}
+    config["recipe"]["weights"] = {"teacher": 1.0, "gt": 0.0, "edge": 0.1}
+    config["data"].update(
+        {
+            "lq_root": str(paths.lq_root),
+            "gt_root": str(paths.gt_root),
+            "lq_size": [32, 32],
+            "gt_size": [32, 32],
+        }
+    )
+    config["trainer"].update(
+        {
+            "device": "cpu",
+            "batch_size": 1,
+            "max_steps": 1,
+            "validate_every": 1,
+            "checkpoint_every": 1,
+            "num_workers": 0,
+            "amp": False,
+        }
+    )
+    config["run"]["output_dir"] = str(tmp_path / "run")
+
+    trainer = _make_trainer(config)
+    assert set(trainer.recipe.components) == {
+        "conditional_student_decoder",
+        "latent_provider",
+        "teacher_target_provider",
+    }
+
+    result = trainer.fit()
+
+    payload = torch.load(result.latest_checkpoint, map_location="cpu", weights_only=False)
+    assert result.global_step == 1
+    assert set(payload["student_state"]) == {"conditional_student_decoder"}
+    assert payload["training_contract"]["teacher_target_provider"] == {
+        "type": "dataset_gt"
+    }
+
+
 def test_trainer_keeps_only_latest_configured_checkpoints(tmp_path):
     config = _training_config(tmp_path, max_steps=3)
     config["trainer"]["keep_last_checkpoints"] = 2
@@ -195,6 +247,23 @@ def test_resume_rejects_changed_optimizer(tmp_path):
 
     with pytest.raises(ValueError, match="incompatible training contract.*optimizer"):
         _make_trainer(incompatible).fit(resume=checkpoint)
+
+
+def test_resume_accepts_checkpoint_before_teacher_provider_contract_fields(tmp_path):
+    config = _training_config(tmp_path, max_steps=1)
+    checkpoint = _make_trainer(config).fit().latest_checkpoint
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    payload["training_contract"].pop("latent_provider")
+    payload["training_contract"].pop("teacher_target_provider")
+    legacy_checkpoint = checkpoint.with_name("legacy_provider_contract.pt")
+    torch.save(payload, legacy_checkpoint)
+    resumed_config = deepcopy(config)
+    resumed_config["trainer"]["max_steps"] = 2
+
+    resumed = _make_trainer(resumed_config).fit(resume=legacy_checkpoint)
+
+    assert resumed.start_step == 1
+    assert resumed.global_step == 2
 
 
 def test_resume_rejects_changed_augmentation_contract(tmp_path):
